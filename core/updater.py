@@ -1,394 +1,426 @@
-"""Automatic update helpers for RugBase."""
+"""Automatic update utilities for RugBase.
+
+This module implements the fully automated update workflow described in the
+project requirements.  It communicates with GitHub releases, downloads the
+latest ``.zip`` asset, prepares a hidden batch updater, and restarts the
+application once the update has been applied.
+"""
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import pathlib
-import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
-
-try:  # pragma: no cover - Tkinter may not be available in headless tests
-    from tkinter import messagebox  # type: ignore
-except Exception:  # pragma: no cover - graceful fallback when Tk is unavailable
-    messagebox = None  # type: ignore
+from typing import Optional
 
 from .version import __version__
 
-CONFIG_FILENAME = "update_config.json"
-DEFAULT_CONFIG: Dict[str, str] = {
-    "version_url": "rugbase.txt",
-    "download_url": "https://example.com/downloads/RugBase.exe",
-    "download_filename": "RugBase.exe",
-    "changelog_url": "",
-}
+GITHUB_REPO = "hakanakaslanx-code/RugBase"
+LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+USER_AGENT = "RugBase-Updater"
 
 
 class UpdateError(RuntimeError):
-    """Base class for update related errors."""
-
-
-class UpdateConfigurationError(UpdateError):
-    """Raised when the update subsystem is misconfigured."""
+    """Raised when the updater cannot complete an operation."""
 
 
 @dataclass
-class UpdateInfo:
-    """Details about the local and remote RugBase versions."""
+class ReleaseInfo:
+    """Information about a GitHub release asset."""
+
+    tag: str
+    asset_name: str
+    asset_url: str
+
+    @property
+    def normalized_version(self) -> str:
+        return _strip_version_prefix(self.tag)
+
+
+@dataclass
+class UpdateStatus:
+    """Represents the local and remote versions."""
 
     local_version: str
     remote_version: str
-    download_url: str
-    download_filename: str
-    changelog_url: Optional[str] = None
+    release: Optional[ReleaseInfo]
 
     @property
     def update_available(self) -> bool:
+        if not self.remote_version or not self.release:
+            return False
         return _is_remote_newer(self.remote_version, self.local_version)
 
 
-def load_config() -> Dict[str, str]:
-    """Load update configuration from disk or fall back to defaults."""
+# -- Public API -------------------------------------------------------------
 
-    override = os.environ.get("RUGBASE_UPDATE_CONFIG")
-    if override:
-        config_path = pathlib.Path(override).expanduser()
-    else:
-        config_path = _config_path()
+def get_update_status() -> UpdateStatus:
+    """Return information about the latest release on GitHub."""
 
-    config: Dict[str, str] = dict(DEFAULT_CONFIG)
-    if config_path.exists():
-        try:
-            loaded = json.loads(config_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:  # pragma: no cover - configuration error
-            raise UpdateConfigurationError(f"Invalid JSON in {config_path}: {exc}") from exc
-        if not isinstance(loaded, dict):  # pragma: no cover - configuration error
-            raise UpdateConfigurationError(f"Update configuration in {config_path} must be an object")
-        config.update({str(key): str(value) for key, value in loaded.items()})
+    try:
+        release = _fetch_latest_release()
+    except UpdateError:
+        raise
+    except Exception as exc:  # pragma: no cover - network or JSON parsing issues
+        raise UpdateError(f"Unable to query GitHub releases: {exc}") from exc
 
-    return config
+    remote_version = release.normalized_version if release else ""
+    return UpdateStatus(local_version=__version__, remote_version=remote_version, release=release)
 
 
-def check_for_update() -> UpdateInfo:
-    """Return information about the latest available version."""
+def download_release_asset(release: ReleaseInfo) -> pathlib.Path:
+    """Download the given release asset to the user's temporary directory."""
 
-    config = _validate_config(load_config())
+    if os.name != "nt":  # pragma: no cover - updater is Windows specific
+        raise UpdateError("The RugBase updater is only supported on Windows.")
 
-    remote_version = _read_version(config["version_url"])
-    if not remote_version:
-        raise UpdateError("Received an empty version string from the update source")
+    download_dir = pathlib.Path(tempfile.mkdtemp(prefix="RugBase_Update_"))
+    destination = download_dir / release.asset_name
 
-    download_filename = config.get("download_filename") or _infer_filename(config["download_url"])
-
-    return UpdateInfo(
-        local_version=__version__,
-        remote_version=remote_version,
-        download_url=config["download_url"],
-        download_filename=download_filename,
-        changelog_url=config.get("changelog_url") or None,
+    request = urllib.request.Request(
+        release.asset_url,
+        headers={"User-Agent": USER_AGENT},
     )
 
+    try:
+        with urllib.request.urlopen(request) as response:  # nosec: B310 - trusted URL from release
+            data = response.read()
+    except urllib.error.URLError as exc:  # pragma: no cover - network error path
+        raise UpdateError(f"Unable to download the update: {exc}") from exc
 
-def download_update(info: UpdateInfo, *, inplace: bool = False) -> pathlib.Path:
-    """Download the latest release and return the filesystem path."""
+    try:
+        destination.write_bytes(data)
+    except OSError as exc:
+        raise UpdateError(f"Failed to save the downloaded update: {exc}") from exc
 
-    _ensure_download_url(info.download_url)
-
-    destination_dir = _install_directory() if inplace else _updates_directory()
-    destination_dir.mkdir(parents=True, exist_ok=True)
-
-    target_name = info.download_filename
-    if not inplace:
-        stem = pathlib.Path(info.download_filename).stem
-        suffix = pathlib.Path(info.download_filename).suffix
-        safe_version = _safe_version_tag(info.remote_version)
-        target_name = f"{stem}-{safe_version}{suffix}" if suffix else f"{stem}-{safe_version}"
-
-    destination = destination_dir / target_name
-
-    if inplace and destination.exists():
-        backup = _next_backup_name(destination)
-        destination.replace(backup)
-
-    _download_to_path(info.download_url, destination)
     return destination
 
 
-def prompt_for_update(parent: Optional[object] = None) -> None:
-    """Display interactive update prompts for the running application."""
+def prepare_updater(zip_path: pathlib.Path, release: ReleaseInfo) -> pathlib.Path:
+    """Create the RugBase_Updater.bat script for the downloaded asset."""
+
+    if os.name != "nt":  # pragma: no cover - updater is Windows specific
+        raise UpdateError("The RugBase updater is only supported on Windows.")
+
+    exe_path = _current_executable()
+    install_dir = exe_path.parent
+    version_tag = _sanitize_for_filename(release.normalized_version)
+    timestamp = time.strftime("%Y%m%d%H%M%S")
+    backup_name = f"{exe_path.stem}_backup_{version_tag}_{timestamp}{exe_path.suffix or '.bak'}"
+
+    updater_dir = zip_path.parent
+    script_path = updater_dir / "RugBase_Updater.bat"
+
+    script_contents = _build_updater_script(
+        zip_path=zip_path,
+        install_dir=install_dir,
+        exe_name=exe_path.name,
+        backup_name=backup_name,
+        version_label=release.normalized_version,
+    )
 
     try:
-        info = check_for_update()
-    except UpdateError as exc:
-        _show_message("Check for Updates", str(exc), error=True, parent=parent)
-        return
+        script_path.write_text(script_contents, encoding="utf-8")
+    except OSError as exc:
+        raise UpdateError(f"Failed to create updater script: {exc}") from exc
 
-    if not info.update_available:
-        _show_message(
-            "Check for Updates",
-            f"You are already running the latest version ({info.local_version}).",
-            parent=parent,
-        )
-        return
+    return script_path
 
-    message_lines = [
-        f"Current version: {info.local_version}",
-        f"Latest version: {info.remote_version}",
-        "",
-        "Would you like to download the update now?",
-    ]
-    if info.changelog_url:
-        message_lines.insert(3, f"Release notes: {info.changelog_url}")
 
-    prompt = "\n".join(message_lines)
+def launch_updater(script_path: pathlib.Path) -> None:
+    """Launch the updater script in a hidden background process."""
 
-    if messagebox is None:
-        print("Update available:\n" + prompt)
-        try:
-            destination = download_update(info)
-        except UpdateError as exc:  # pragma: no cover - runtime error path
-            print(f"Failed to download update: {exc}", file=sys.stderr)
-            return
-        print(f"Update downloaded to: {destination}")
-        return
+    if os.name != "nt":  # pragma: no cover - updater is Windows specific
+        raise UpdateError("The RugBase updater is only supported on Windows.")
 
-    if not messagebox.askyesno("Update Available", prompt, parent=parent):
-        return
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     try:
-        destination = download_update(info)
-    except UpdateError as exc:
-        _show_message("Check for Updates", f"Failed to download update: {exc}", error=True, parent=parent)
-        return
-
-    instructions = (
-        "Download complete. Close RugBase and run 'update.bat' to install the new version.\n"
-        f"Saved to: {destination}"
-    )
-    _show_message("Update Downloaded", instructions, parent=parent)
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(script_path)],
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except OSError as exc:  # pragma: no cover - process creation failure
+        raise UpdateError(f"Unable to start the updater script: {exc}") from exc
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    """Entry point for command-line usage."""
+def check_for_updates(parent: Optional[object] = None) -> bool:
+    """Check GitHub for a new release and schedule the update if available.
 
-    parser = argparse.ArgumentParser(description="RugBase updater utility")
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Check for a newer version and report the result",
-    )
-    parser.add_argument(
-        "--download",
-        action="store_true",
-        help="Download the newest version to the updates folder",
-    )
-    parser.add_argument(
-        "--batch-update",
-        action="store_true",
-        help="Download and replace the existing executable (requires RugBase to be closed)",
-    )
-
-    args = parser.parse_args(argv)
+    The function displays message boxes when a GUI parent is supplied.  It
+    returns ``True`` when an update has been scheduled and ``False`` otherwise.
+    """
 
     try:
-        info = check_for_update()
+        status = get_update_status()
     except UpdateError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        _notify_user("Check for Updates", str(exc), parent, error=True)
+        return False
 
-    if args.check or not any((args.download, args.batch_update)):
-        if info.update_available:
-            print(
-                "New version available!\n"
-                f"Current version: {info.local_version}\n"
-                f"Latest version: {info.remote_version}"
-            )
-            if info.changelog_url:
-                print(f"Release notes: {info.changelog_url}")
-        else:
-            print(f"RugBase is up to date (version {info.local_version}).")
-        return 0
+    if not status.update_available or not status.release:
+        _notify_user("Check for Updates", "Already up to date.", parent)
+        return False
 
-    if args.download:
-        if not info.update_available:
-            print("Already running the latest version. No download required.")
-            return 0
-        try:
-            destination = download_update(info)
-        except UpdateError as exc:
-            print(f"Download failed: {exc}", file=sys.stderr)
-            return 1
-        print(f"Update downloaded to: {destination}")
-        return 0
+    if not _confirm_update(status, parent):
+        return False
 
-    if args.batch_update:
-        if not info.update_available:
-            print("RugBase is already up to date.")
-            return 0
-        try:
-            destination = download_update(info, inplace=True)
-        except UpdateError as exc:
-            print(f"Automatic update failed: {exc}", file=sys.stderr)
-            return 1
-        print(f"Update installed to: {destination}")
-        return 0
+    try:
+        zip_path = download_release_asset(status.release)
+    except UpdateError as exc:
+        _notify_user("Check for Updates", str(exc), parent, error=True)
+        return False
 
-    return 0
+    try:
+        script_path = prepare_updater(zip_path, status.release)
+    except UpdateError as exc:
+        _notify_user("Check for Updates", str(exc), parent, error=True)
+        return False
+
+    try:
+        launch_updater(script_path)
+    except UpdateError as exc:
+        _notify_user("Check for Updates", str(exc), parent, error=True)
+        return False
+
+    _notify_user(
+        "Check for Updates",
+        "Update downloaded. RugBase will close and restart to install the update.",
+        parent,
+    )
+    _request_application_restart(parent)
+    return True
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+# -- Internal helpers ------------------------------------------------------
+
+def _fetch_latest_release() -> Optional[ReleaseInfo]:
+    request = urllib.request.Request(
+        LATEST_RELEASE_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request) as response:  # nosec: B310 - GitHub API
+            payload = response.read()
+    except urllib.error.URLError as exc:
+        raise UpdateError(f"Unable to contact GitHub: {exc}") from exc
+
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpdateError(f"Unexpected response from GitHub: {exc}") from exc
+
+    tag = str(data.get("tag_name") or "").strip()
+    assets = data.get("assets") or []
+
+    asset_url = ""
+    asset_name = ""
+    for asset in assets:
+        name = str(asset.get("name") or "")
+        download_url = str(asset.get("browser_download_url") or "")
+        if name.lower().endswith(".zip") and download_url:
+            asset_name = name
+            asset_url = download_url
+            break
+
+    if not tag:
+        raise UpdateError("Latest release on GitHub does not have a tag name.")
+
+    if not asset_url:
+        raise UpdateError("Latest release does not contain a .zip asset to download.")
+
+    return ReleaseInfo(tag=tag, asset_name=asset_name or f"RugBase-{tag}.zip", asset_url=asset_url)
 
 
-def _project_root() -> pathlib.Path:
-    return pathlib.Path(__file__).resolve().parents[1]
-
-
-def _config_path() -> pathlib.Path:
-    return pathlib.Path(__file__).with_name(CONFIG_FILENAME)
-
-
-def _install_directory() -> pathlib.Path:
-    if getattr(sys, "frozen", False):  # Running inside PyInstaller bundle
-        return pathlib.Path(sys.executable).resolve().parent
-    return _project_root()
-
-
-def _updates_directory() -> pathlib.Path:
-    return _install_directory() / "updates"
-
-
-def _validate_config(config: Dict[str, str]) -> Dict[str, str]:
-    version_url = config.get("version_url", "").strip()
-    download_url = config.get("download_url", "").strip()
-
-    if not version_url:
-        raise UpdateConfigurationError(
-            "Missing 'version_url' in update configuration. Edit core/update_config.json."
-        )
-
-    config["version_url"] = version_url
-    config["download_url"] = download_url
-    return config
-
-
-def _ensure_download_url(url: str) -> None:
-    if not url:
-        raise UpdateConfigurationError(
-            "Update download URL is not configured. Edit core/update_config.json with your release location."
-        )
-    placeholders = ("example.com", "your-account", "your-org", "YOUR_")
-    if any(token in url for token in placeholders):
-        raise UpdateConfigurationError(
-            "Update download URL still uses a placeholder value. Update core/update_config.json."
-        )
-
-
-def _resolve_source(path_or_url: str) -> Tuple[str, bool]:
-    if "//" in path_or_url:
-        return path_or_url, True
-    absolute = _project_root() / path_or_url
-    return str(absolute), False
-
-
-def _read_version(source: str) -> str:
-    location, remote = _resolve_source(source)
-    if remote:
-        try:
-            with urllib.request.urlopen(location, timeout=10) as response:
-                data = response.read().decode("utf-8")
-        except urllib.error.URLError as exc:
-            raise UpdateError(f"Failed to fetch version information: {exc}") from exc
-    else:
-        try:
-            data = pathlib.Path(location).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise UpdateError(f"Failed to read version file: {exc}") from exc
-    return data.strip()
-
-
-def _infer_filename(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    name = pathlib.Path(parsed.path).name
-    return name or "RugBase.exe"
+def _strip_version_prefix(version: str) -> str:
+    version = version.strip()
+    if version.lower().startswith("v"):
+        version = version[1:]
+    return version
 
 
 def _is_remote_newer(remote: str, local: str) -> bool:
-    return _version_key(remote) > _version_key(local)
+    return _version_tuple(remote) > _version_tuple(local)
 
 
-def _version_key(value: str) -> Tuple[int | str, ...]:
-    separators = ".-_/"
-    normalized = value
-    for separator in separators[1:]:
-        normalized = normalized.replace(separator, separators[0])
-    parts = [part for part in normalized.split(separators[0]) if part]
-    key: list[int | str] = []
-    for part in parts:
-        if part.isdigit():
-            key.append(int(part))
+def _version_tuple(version: str) -> tuple[int, ...]:
+    cleaned = _strip_version_prefix(version)
+    parts: list[int] = []
+    for segment in cleaned.replace("-", ".").split("."):
+        digits = ""
+        for char in segment:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        if digits:
+            parts.append(int(digits))
         else:
-            key.append(part.lower())
-    return tuple(key)
+            parts.append(0)
+    return tuple(parts or [0])
 
 
-def _safe_version_tag(value: str) -> str:
-    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in value)
+def _current_executable() -> pathlib.Path:
+    if getattr(sys, "frozen", False):
+        return pathlib.Path(sys.executable).resolve()
+
+    script_path = pathlib.Path(sys.argv[0]).expanduser()
+    if not script_path.is_absolute():
+        script_path = pathlib.Path.cwd() / script_path
+
+    resolved = script_path.resolve()
+    if resolved.exists():
+        return resolved
+
+    base_dir = pathlib.Path(getattr(sys, "_MEIPASS", pathlib.Path(__file__).resolve().parent))
+    fallback = (base_dir / script_path.name).resolve()
+    return fallback
 
 
-def _next_backup_name(path: pathlib.Path) -> pathlib.Path:
-    timestamp = int(time.time())
-    candidate = path.with_suffix(path.suffix + f".bak-{timestamp}")
-    counter = 1
-    while candidate.exists():
-        candidate = path.with_suffix(path.suffix + f".bak-{timestamp}-{counter}")
-        counter += 1
-    return candidate
+def _sanitize_for_filename(value: str) -> str:
+    if not value:
+        return "latest"
+    safe_chars = [c if c.isalnum() else "_" for c in value]
+    sanitized = "".join(safe_chars).strip("_")
+    return sanitized or "latest"
 
 
-def _download_to_path(source: str, destination: pathlib.Path) -> None:
-    location, remote = _resolve_source(source)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+def _build_updater_script(
+    *,
+    zip_path: pathlib.Path,
+    install_dir: pathlib.Path,
+    exe_name: str,
+    backup_name: str,
+    version_label: str,
+) -> str:
+    zip_path = zip_path.resolve()
+    install_dir = install_dir.resolve()
 
-    if remote:
-        tmp_file = tempfile.NamedTemporaryFile(delete=False, dir=str(destination.parent))
+    return "\r\n".join(
+        [
+            "@echo off",
+            "setlocal enableextensions enabledelayedexpansion",
+            f'set "ZIP_FILE={zip_path}"',
+            f'set "INSTALL_DIR={install_dir}"',
+            f'set "EXE_NAME={exe_name}"',
+            f'set "BACKUP_NAME={backup_name}"',
+            f'set "UPDATE_VERSION={version_label}"',
+            'set "EXTRACT_DIR=%TEMP%\\RugBase_Update_%RANDOM%_%RANDOM%"',
+            "if exist \"%EXTRACT_DIR%\" rd /s /q \"%EXTRACT_DIR%\"",
+            "mkdir \"%EXTRACT_DIR%\" >nul 2>&1",
+            ":wait_for_exit",
+            'move /Y "%INSTALL_DIR%\\%EXE_NAME%" "%INSTALL_DIR%\\%BACKUP_NAME%" >nul 2>&1',
+            'if exist "%INSTALL_DIR%\\%EXE_NAME%" (',
+            '  timeout /t 1 /nobreak >nul',
+            '  goto wait_for_exit',
+            ")",
+            'powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''%ZIP_FILE%'' -DestinationPath ''%EXTRACT_DIR%'' -Force" >nul 2>&1',
+            "if errorlevel 1 goto restore_backup",
+            'set "NEW_EXE="',
+            'for /r "%EXTRACT_DIR%" %%F in (*.exe) do (',
+            '  set "NEW_EXE=%%~fF"',
+            '  goto found_exe',
+            ")",
+            "goto restore_backup",
+            ":found_exe",
+            'if not defined NEW_EXE goto restore_backup',
+            'copy /Y "!NEW_EXE!" "%INSTALL_DIR%\\%EXE_NAME%" >nul 2>&1',
+            "if errorlevel 1 goto restore_backup",
+            'start "" "%INSTALL_DIR%\\%EXE_NAME%"',
+            "goto cleanup",
+            ":restore_backup",
+            'if exist "%INSTALL_DIR%\\%BACKUP_NAME%" move /Y "%INSTALL_DIR%\\%BACKUP_NAME%" "%INSTALL_DIR%\\%EXE_NAME%" >nul 2>&1',
+            ":cleanup",
+            'if exist "%EXTRACT_DIR%" rd /s /q "%EXTRACT_DIR%"',
+            'if exist "%ZIP_FILE%" del "%ZIP_FILE%"',
+            'if exist "%INSTALL_DIR%\\%BACKUP_NAME%" del "%INSTALL_DIR%\\%BACKUP_NAME%"',
+            "endlocal",
+            'del "%~f0"',
+            "",
+        ]
+    )
+
+
+def _notify_user(title: str, message: str, parent: Optional[object], *, error: bool = False) -> None:
+    try:
+        from tkinter import messagebox  # type: ignore
+    except Exception:  # pragma: no cover - tkinter may be unavailable
+        messagebox = None  # type: ignore
+
+    if messagebox and parent is not None:
+        if error:
+            messagebox.showerror(title, message, parent=parent)  # type: ignore[arg-type]
+        else:
+            messagebox.showinfo(title, message, parent=parent)  # type: ignore[arg-type]
+    elif messagebox:
+        if error:
+            messagebox.showerror(title, message)  # type: ignore[arg-type]
+        else:
+            messagebox.showinfo(title, message)  # type: ignore[arg-type]
+    else:  # pragma: no cover - console fallback
+        output = f"{title}: {message}"
+        if error:
+            print(output, file=sys.stderr)
+        else:
+            print(output)
+
+
+def _confirm_update(status: UpdateStatus, parent: Optional[object]) -> bool:
+    message = (
+        "A new version of RugBase is available.\n"
+        f"Current version: {status.local_version}\n"
+        f"Latest version: {status.remote_version}\n\n"
+        "Would you like to download and install it now?"
+    )
+
+    try:
+        from tkinter import messagebox  # type: ignore
+    except Exception:  # pragma: no cover - tkinter may be unavailable
+        messagebox = None  # type: ignore
+
+    if messagebox:
+        if parent is not None:
+            return bool(messagebox.askyesno("Check for Updates", message, parent=parent))  # type: ignore[arg-type]
+        return bool(messagebox.askyesno("Check for Updates", message))  # type: ignore[arg-type]
+
+    response = input(f"{message}\nType 'y' to continue: ")  # pragma: no cover - console fallback
+    return response.strip().lower() in {"y", "yes"}
+
+
+def _request_application_restart(parent: Optional[object]) -> None:
+    if parent is not None:
         try:
-            with urllib.request.urlopen(location, timeout=60) as response, open(tmp_file.name, "wb") as tmp_handle:
-                shutil.copyfileobj(response, tmp_handle)
-            pathlib.Path(tmp_file.name).replace(destination)
-        except urllib.error.URLError as exc:
-            pathlib.Path(tmp_file.name).unlink(missing_ok=True)
-            raise UpdateError(f"Failed to download update: {exc}") from exc
-        except OSError as exc:
-            pathlib.Path(tmp_file.name).unlink(missing_ok=True)
-            raise UpdateError(f"Failed to save update: {exc}") from exc
-    else:
-        try:
-            shutil.copyfile(location, destination)
-        except OSError as exc:
-            raise UpdateError(f"Failed to copy update from {location}: {exc}") from exc
+            parent.after(250, getattr(parent, "quit", parent.destroy))
+            parent.after(750, getattr(parent, "destroy", lambda: None))
+        except Exception:  # pragma: no cover - defensive programming
+            pass
+
+    def _force_exit() -> None:
+        time.sleep(1.5)
+        os._exit(0)
+
+    threading.Thread(target=_force_exit, name="RugBaseUpdaterExit", daemon=True).start()
 
 
-def _show_message(title: str, message: str, *, error: bool = False, parent: Optional[object] = None) -> None:
-    if messagebox is None:
-        stream = sys.stderr if error else sys.stdout
-        print(f"{title}: {message}", file=stream)
-        return
-
-    if error:
-        messagebox.showerror(title, message, parent=parent)
-    else:
-        messagebox.showinfo(title, message, parent=parent)
-
-
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
-    sys.exit(main())
+__all__ = [
+    "ReleaseInfo",
+    "UpdateStatus",
+    "UpdateError",
+    "get_update_status",
+    "download_release_asset",
+    "prepare_updater",
+    "launch_updater",
+    "check_for_updates",
+]
