@@ -85,8 +85,16 @@ class MainWindow:
         self.button_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         self.button_frame.pack(fill=tk.X)
 
+        self.add_button = ttk.Button(self.button_frame, text="Add Item", command=self.on_add_item)
+        self.add_button.pack(side=tk.LEFT)
+
+        self.delete_button = ttk.Button(
+            self.button_frame, text="Delete Item", command=self.on_delete_item
+        )
+        self.delete_button.pack(side=tk.LEFT, padx=(10, 0))
+
         self.open_button = ttk.Button(self.button_frame, text="Open Item", command=self.on_open_item)
-        self.open_button.pack(anchor=tk.E)
+        self.open_button.pack(side=tk.RIGHT)
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
@@ -121,6 +129,9 @@ class MainWindow:
     def on_open_item(self) -> None:
         self.open_selected_item()
 
+    def on_add_item(self) -> None:
+        ItemCardWindow(self.root, None, on_save=self.load_items)
+
     def get_selected_item_id(self) -> Optional[str]:
         selected = self.tree.selection()
         if not selected:
@@ -134,6 +145,30 @@ class MainWindow:
             return
 
         ItemCardWindow(self.root, item_id, on_save=self.load_items)
+
+    def on_delete_item(self) -> None:
+        item_id = self.get_selected_item_id()
+        if not item_id:
+            messagebox.showinfo("Delete Item", "Please select an item to delete.")
+            return
+
+        item = db.fetch_item(item_id)
+        item_label = item.get("rug_no") if item else item_id
+        confirm = messagebox.askyesno(
+            "Delete Item",
+            f"Are you sure you want to delete {item_label}? This action cannot be undone.",
+        )
+        if not confirm:
+            return
+
+        try:
+            db.delete_item(item_id)
+        except Exception as exc:  # sqlite3.Error, but keep generic to avoid extra import
+            messagebox.showerror("Delete Item", f"Failed to delete the item: {exc}")
+            return
+
+        self.load_items()
+        messagebox.showinfo("Delete Item", "The selected item has been deleted.")
 
     def get_filtered_rows(self) -> list[dict]:
         collection_filter = self.collection_var.get().strip() or None
