@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional
 
-from PIL import ImageTk
+try:
+    from PIL import ImageTk  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - optional dependency at runtime
+    ImageTk = None  # type: ignore[assignment]
 
 import db
-from label_renderer import DymoLabelRenderer
+from label_renderer import DymoLabelRenderer, PIL_AVAILABLE, PIL_IMPORT_MESSAGE
+
+MISSING_PILLOW_TEXT = "Etiket özellikleri Pillow kütüphanesi olmadan kullanılamaz."
 
 
 class LabelGeneratorWindow:
@@ -22,6 +29,8 @@ class LabelGeneratorWindow:
         self.window.bind("<Escape>", lambda _: self.close())
 
         self.renderer = DymoLabelRenderer()
+        self._pillow_ready = PIL_AVAILABLE and self.renderer.pillow_available
+        self._preview_ready = ImageTk is not None and self._pillow_ready
 
         self.rug_no_var = tk.StringVar()
         self.collection_var = tk.StringVar()
@@ -32,11 +41,18 @@ class LabelGeneratorWindow:
 
         self.results: List[Dict[str, object]] = []
         self._result_index: Dict[str, Dict[str, object]] = {}
-        self.preview_photo: Optional[ImageTk.PhotoImage] = None
+        self.preview_photo: Optional["ImageTk.PhotoImage"] = None
         self.warning_var = tk.StringVar()
 
         self._build_layout()
         self._load_origin_values()
+
+        if not self._pillow_ready:
+            self._handle_missing_pillow()
+        elif not self._preview_ready:
+            self.warning_var.set(
+                "Önizleme için Pillow'un ImageTk modülü gerekli. Önizleme devre dışı bırakıldı."
+            )
 
     # region UI setup
     def _build_layout(self) -> None:
@@ -113,7 +129,7 @@ class LabelGeneratorWindow:
         preview_frame.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         container.columnconfigure(1, weight=1)
 
-        self.preview_label = ttk.Label(preview_frame)
+        self.preview_label = ttk.Label(preview_frame, anchor=tk.CENTER, justify=tk.CENTER)
         self.preview_label.pack(fill=tk.BOTH, expand=True)
 
         self.warning_label = ttk.Label(preview_frame, textvariable=self.warning_var, foreground="#a94442", wraplength=360)
@@ -187,6 +203,11 @@ class LabelGeneratorWindow:
         self._update_preview()
 
     def _update_buttons(self) -> None:
+        if not self._pillow_ready:
+            self.save_button.configure(state=tk.DISABLED)
+            self.print_button.configure(state=tk.DISABLED)
+            self.bulk_button.configure(state=tk.DISABLED)
+            return
         selected_count = len(self.tree.selection())
         state_single = tk.NORMAL if selected_count == 1 else tk.DISABLED
         self.save_button.configure(state=state_single)
@@ -196,11 +217,35 @@ class LabelGeneratorWindow:
             self.warning_var.set("")
 
     def _clear_preview(self) -> None:
-        self.preview_label.configure(image="")
+        self.preview_label.configure(image="", text="")
         self.preview_photo = None
         self.warning_var.set("")
 
+    def _handle_missing_pillow(self) -> None:
+        self.warning_var.set(PIL_IMPORT_MESSAGE)
+        try:
+            messagebox.showerror("Etiket Üretici", PIL_IMPORT_MESSAGE, parent=self.window)
+        except tk.TclError:
+            messagebox.showerror("Etiket Üretici", PIL_IMPORT_MESSAGE)
+        self.save_button.configure(state=tk.DISABLED)
+        self.bulk_button.configure(state=tk.DISABLED)
+        self.print_button.configure(state=tk.DISABLED)
+        self.preview_label.configure(
+            text=MISSING_PILLOW_TEXT,
+        )
+
     def _update_preview(self) -> None:
+        if not self._pillow_ready:
+            self._clear_preview()
+            self.warning_var.set(PIL_IMPORT_MESSAGE)
+            self.preview_label.configure(text=MISSING_PILLOW_TEXT)
+            return
+        if not self._preview_ready:
+            self.preview_label.configure(
+                image="",
+                text="Önizleme gösterilemiyor. Pillow ImageTk modülü bulunamadı.",
+            )
+            return
         selected = self._get_selected_items()
         if len(selected) != 1:
             self._clear_preview()
@@ -212,6 +257,7 @@ class LabelGeneratorWindow:
             self.warning_var.set(f"Önizleme oluşturulamadı: {exc}")
             self._clear_preview()
             return
+        assert ImageTk is not None  # güvenli: _preview_ready kontrolünden geçildi
         self.preview_photo = ImageTk.PhotoImage(result.image)
         self.preview_label.configure(image=self.preview_photo)
         self._show_warnings(result.warnings)
@@ -223,6 +269,9 @@ class LabelGeneratorWindow:
 
     # region actions
     def on_save_pdf(self) -> None:
+        if not self._pillow_ready:
+            messagebox.showerror("Kaydet", PIL_IMPORT_MESSAGE)
+            return
         selected = self._get_selected_items()
         if len(selected) != 1:
             return
@@ -246,6 +295,9 @@ class LabelGeneratorWindow:
         self._show_result_message("Kaydet", "Etiket kaydedildi.", warnings)
 
     def on_save_bulk_pdf(self) -> None:
+        if not self._pillow_ready:
+            messagebox.showerror("Toplu PDF", PIL_IMPORT_MESSAGE)
+            return
         selected = self._get_selected_items()
         if len(selected) <= 1:
             return
@@ -265,6 +317,9 @@ class LabelGeneratorWindow:
         self._show_result_message("Toplu PDF", "PDF kaydedildi.", warnings)
 
     def on_print(self) -> None:
+        if not self._pillow_ready:
+            messagebox.showerror("Yazdır", PIL_IMPORT_MESSAGE)
+            return
         selected = self._get_selected_items()
         if len(selected) != 1:
             return

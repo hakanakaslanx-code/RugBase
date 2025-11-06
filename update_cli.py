@@ -42,16 +42,16 @@ def command_download(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        zip_path = updater.download_release_asset(status.release)
+        asset_path = updater.download_release_asset(status.release)
     except updater.UpdateError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Downloaded update to: {zip_path}")
+    print(f"Downloaded update to: {asset_path}")
 
     if args.prepare:
         try:
-            script_path = updater.prepare_updater(zip_path, status.release)
+            script_path = updater.prepare_updater(asset_path, status.release)
         except updater.UpdateError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -71,8 +71,8 @@ def command_apply(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        zip_path = updater.download_release_asset(status.release)
-        script_path = updater.prepare_updater(zip_path, status.release)
+        asset_path = updater.download_release_asset(status.release)
+        script_path = updater.prepare_updater(asset_path, status.release)
     except updater.UpdateError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
