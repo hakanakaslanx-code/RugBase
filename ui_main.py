@@ -1,6 +1,7 @@
 import csv
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 from typing import Optional
 
 import db
@@ -28,9 +29,9 @@ class MainWindow:
         self.brand_var = tk.StringVar()
         ttk.Entry(self.filter_frame, textvariable=self.brand_var, width=20).grid(row=0, column=3, pady=5, sticky=tk.W)
 
-        ttk.Label(self.filter_frame, text="Status:").grid(row=0, column=4, padx=(15, 5), pady=5, sticky=tk.W)
-        self.status_var = tk.StringVar()
-        ttk.Entry(self.filter_frame, textvariable=self.status_var, width=20).grid(row=0, column=5, pady=5, sticky=tk.W)
+        ttk.Label(self.filter_frame, text="Style:").grid(row=0, column=4, padx=(15, 5), pady=5, sticky=tk.W)
+        self.style_var = tk.StringVar()
+        ttk.Entry(self.filter_frame, textvariable=self.style_var, width=20).grid(row=0, column=5, pady=5, sticky=tk.W)
 
         self.search_button = ttk.Button(self.filter_frame, text="Search", command=self.on_search)
         self.search_button.grid(row=0, column=6, padx=(15, 0), pady=5, sticky=tk.W)
@@ -55,30 +56,22 @@ class MainWindow:
         self.table_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         self.table_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.columns = (
-            "rug_no",
-            "sku",
-            "collection",
-            "brand",
-            "design",
-            "size_label",
-            "area",
-            "stock_location",
-            "status",
-        )
+        self.column_defs = list(db.MASTER_SHEET_COLUMNS)
+        self.columns = [field for field, _ in self.column_defs]
 
         self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", height=15)
-        for col in self.columns:
-            self.tree.heading(col, text=col.replace("_", " ").title())
-            self.tree.column(col, anchor=tk.W, width=120)
-        self.tree.column("design", width=160)
-        self.tree.column("area", anchor=tk.E, width=80)
+        for field, header in self.column_defs:
+            anchor = tk.E if field in db.NUMERIC_FIELDS else tk.W
+            self.tree.heading(field, text=header)
+            self.tree.column(field, anchor=anchor, width=120, stretch=False)
 
-        scrollbar = ttk.Scrollbar(self.table_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        yscroll = ttk.Scrollbar(self.table_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        xscroll = ttk.Scrollbar(self.table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
 
         self.tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
 
         self.table_frame.rowconfigure(0, weight=1)
         self.table_frame.columnconfigure(0, weight=1)
@@ -126,6 +119,7 @@ class MainWindow:
             )
 
         self.update_totals(items)
+        self._autosize_columns()
 
     def on_search(self) -> None:
         self.load_items()
@@ -180,23 +174,40 @@ class MainWindow:
     def get_filtered_rows(self) -> list[dict]:
         collection_filter = self.collection_var.get().strip() or None
         brand_filter = self.brand_var.get().strip() or None
-        status_filter = self.status_var.get().strip() or None
+        style_filter = self.style_var.get().strip() or None
 
-        return db.fetch_items(collection_filter, brand_filter, status_filter)
+        return db.fetch_items(collection_filter, brand_filter, style_filter)
 
     def _format_item_values(self, item: dict) -> tuple[str, ...]:
-        values = [
-            item["rug_no"],
-            item["sku"],
-            item["collection"],
-            item["brand"],
-            item["design"],
-            item["size_label"],
-            f"{item['area']:.2f}" if item["area"] is not None else "",
-            item["stock_location"],
-            item["status"],
-        ]
+        values: list[str] = []
+        for field, _ in self.column_defs:
+            value = item.get(field)
+            if field in db.NUMERIC_FIELDS:
+                if value is None or value == "":
+                    values.append("")
+                else:
+                    try:
+                        values.append(f"{float(value):.2f}")
+                    except (TypeError, ValueError):
+                        values.append(str(value))
+            else:
+                values.append(str(value) if value is not None else "")
         return tuple(values)
+
+    def _autosize_columns(self) -> None:
+        self.tree.update_idletasks()
+        default_font = tkfont.nametofont("TkDefaultFont")
+        padding = 20
+        max_width = 280
+
+        for field, header in self.column_defs:
+            header_width = default_font.measure(header) + padding
+            content_width = header_width
+            for item_id in self.tree.get_children():
+                text = self.tree.set(item_id, field)
+                content_width = max(content_width, default_font.measure(text) + padding)
+            final_width = max(80, min(content_width, max_width))
+            self.tree.column(field, width=final_width, stretch=False)
 
     def update_totals(self, items: list[dict]) -> None:
         total_items = len(items)
@@ -216,7 +227,7 @@ class MainWindow:
         try:
             with open(file_path, "w", newline="", encoding="utf-8") as csv_file:
                 writer = csv.writer(csv_file)
-                writer.writerow([self.tree.heading(col)["text"] for col in self.columns])
+                writer.writerow([header for _, header in self.column_defs])
                 for item in items:
                     writer.writerow(self._format_item_values(item))
         except OSError as exc:
@@ -234,7 +245,7 @@ class MainWindow:
 
         workbook = Workbook()
         sheet = workbook.active
-        sheet.append([self.tree.heading(col)["text"] for col in self.columns])
+        sheet.append([header for _, header in self.column_defs])
         for item in items:
             sheet.append(self._format_item_values(item))
 

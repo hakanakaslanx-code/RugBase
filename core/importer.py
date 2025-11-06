@@ -3,38 +3,50 @@
 from __future__ import annotations
 
 import csv
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List
 
 import db
 
 FIELD_MAPPING: Dict[str, str] = {
     "RugNo": "rug_no",
-    "SKU": "sku",
-    "Type": "type",
+    "UPC": "upc",
+    "RollNo": "roll_no",
+    "VRugNo": "v_rug_no",
+    "Vcollection": "v_collection",
+    "VCollection": "v_collection",
     "Collection": "collection",
-    "Brand": "brand",
     "VDesign": "v_design",
     "Design": "design",
+    "Brandname": "brand_name",
+    "BrandName": "brand_name",
+    "Brand": "brand_name",
     "Ground": "ground",
     "Border": "border",
-    "Size": "size_label",
+    "ASize": "a_size",
+    "ActualSize": "a_size",
+    "StSize": "st_size",
     "STSize": "st_size",
     "Area": "area",
-    "StockLocation": "stock_location",
-    "Godown": "godown",
-    "PurchaseDate": "purchase_date",
-    "PVNo": "pv_no",
-    "Vendor": "vendor",
-    "SoldOn": "sold_on",
-    "InvoiceNo": "invoice_no",
-    "Customer": "customer",
-    "Status": "status",
-    "PaymentStatus": "payment_status",
-    "Notes": "notes",
+    "Type": "type",
+    "Rate": "rate",
+    "Amount": "amount",
+    "Shape": "shape",
+    "Style": "style",
+    "ImageFileName": "image_file_name",
+    "Image": "image_file_name",
+    "Origin": "origin",
+    "Retail": "retail",
+    "SP": "sp",
+    "MSRP": "msrp",
+    "Cost": "cost",
 }
+
+
+def _normalize_field_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 @dataclass
@@ -105,6 +117,8 @@ def _iter_csv_records(records: Iterable[Dict[str, str]]) -> Iterator[Dict[str, s
                 cleaned[key] = ""
             else:
                 cleaned[key] = str(value).strip()
+        for header in FIELD_MAPPING.keys():
+            cleaned.setdefault(header, "")
         yield cleaned
 
 
@@ -126,73 +140,46 @@ def _process_records(records: Iterable[Dict[str, str]]) -> ImportResult:
 
 
 def _map_source_to_item(source: Dict[str, str]) -> Dict[str, Any]:
-    item: Dict[str, Any] = {}
-    for source_field, target_field in FIELD_MAPPING.items():
-        if source_field not in source:
-            continue
-        value = source.get(source_field, "").strip()
-        if value == "":
-            # Treat empty strings as missing data to avoid overwriting existing values.
-            continue
+    if not source:
+        return {}
 
+    normalized_keys = {
+        _normalize_field_name(key): key
+        for key in source.keys()
+        if isinstance(key, str) and key
+    }
+
+    def _get(field_name: str) -> str:
+        key = normalized_keys.get(_normalize_field_name(field_name))
+        if key is None:
+            return ""
+        value = source.get(key, "")
+        if isinstance(value, str):
+            return value.strip()
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    item: Dict[str, Any] = {}
+    st_size_value = _get("StSize")
+    a_size_value = _get("ASize")
+    area_value = _get("Area")
+
+    for source_field, target_field in FIELD_MAPPING.items():
+        value = _get(source_field)
+        if value == "":
+            continue
         if target_field == "area":
-            item[target_field] = _parse_float(value)
-        elif target_field in {"purchase_date", "sold_on"}:
-            item[target_field] = _normalize_date(value)
-        else:
-            item[target_field] = value
+            continue
+        if target_field in {"sp", "cost"}:
+            numeric_value = db.parse_numeric(value)
+            if numeric_value is not None:
+                item[target_field] = numeric_value
+            continue
+        item[target_field] = value
+
+    computed_area = db.calculate_area(st_size_value, area_value, a_size_value)
+    if computed_area is not None:
+        item["area"] = computed_area
 
     return item
-
-
-def _parse_float(value: str) -> Optional[float]:
-    normalized = value.replace(",", "")
-    try:
-        return float(normalized)
-    except ValueError:
-        return None
-
-
-def _normalize_date(value: str) -> Optional[str]:
-    value = value.strip()
-    if not value:
-        return None
-
-    # Try ISO formats first (YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS)
-    for parser in (_parse_iso_datetime, _parse_known_formats):
-        parsed = parser(value)
-        if parsed:
-            return parsed
-
-    return None
-
-
-def _parse_iso_datetime(value: str) -> Optional[str]:
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return dt.date().isoformat()
-
-
-def _parse_known_formats(value: str) -> Optional[str]:
-    formats = [
-        "%Y/%m/%d",
-        "%m/%d/%Y",
-        "%d/%m/%Y",
-        "%d-%m-%Y",
-        "%m-%d-%Y",
-        "%d.%m.%Y",
-        "%m.%d.%Y",
-        "%d %b %Y",
-        "%d %B %Y",
-        "%b %d, %Y",
-        "%B %d, %Y",
-    ]
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(value, fmt)
-            return dt.date().isoformat()
-        except ValueError:
-            continue
-    return None
