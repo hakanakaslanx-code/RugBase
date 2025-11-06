@@ -66,6 +66,9 @@ TABLE_COLUMNS: List[Tuple[str, str]] = [
     ],
     ("created_at", "TEXT DEFAULT (CURRENT_TIMESTAMP)"),
     ("updated_at", "TEXT DEFAULT (CURRENT_TIMESTAMP)"),
+    ("status", "TEXT DEFAULT 'in_stock'"),
+    ("location", "TEXT DEFAULT 'warehouse'"),
+    ("consignment_id", "INTEGER"),
 ]
 
 UPDATABLE_FIELDS: Tuple[str, ...] = MASTER_SHEET_FIELDS
@@ -189,6 +192,10 @@ def initialize_database() -> None:
             )
             conn.executemany(insert_item_sql, SAMPLE_ITEMS)
             conn.commit()
+
+    from consignment_repo import migrate
+
+    migrate()
 
 
 def fetch_items(
