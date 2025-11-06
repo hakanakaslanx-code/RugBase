@@ -7,6 +7,7 @@ import db
 from core import importer, updater
 from core.version import __version__
 from ui_item_card import ItemCardWindow
+from ui.tag_printing import TagPrintingWindow
 from openpyxl import Workbook
 
 
@@ -17,6 +18,12 @@ class MainWindow:
         self.load_items()
 
     def _create_widgets(self) -> None:
+        self.menubar = tk.Menu(self.root)
+        self.tools_menu = tk.Menu(self.menubar, tearoff=0)
+        self.tools_menu.add_command(label="Etiket Basımı…", command=self.open_tag_printing)
+        self.menubar.add_cascade(label="Tools", menu=self.tools_menu)
+        self.root.config(menu=self.menubar)
+
         self.filter_frame = ttk.Frame(self.root, padding=10)
         self.filter_frame.pack(fill=tk.X)
 
@@ -112,6 +119,8 @@ class MainWindow:
         self.version_label = ttk.Label(self.footer_frame, text=f"Version {__version__}")
         self.version_label.pack(side=tk.RIGHT, padx=(0, 10))
 
+        self.tag_print_window: Optional[TagPrintingWindow] = None
+
     def load_items(self) -> None:
         for row in self.tree.get_children():
             self.tree.delete(row)
@@ -144,6 +153,16 @@ class MainWindow:
         if not selected:
             return None
         return selected[0]
+
+    def open_tag_printing(self) -> None:
+        if self.tag_print_window and self.tag_print_window.window.winfo_exists():
+            self.tag_print_window.window.focus_set()
+            return
+
+        def _on_close() -> None:
+            self.tag_print_window = None
+
+        self.tag_print_window = TagPrintingWindow(self.root, on_close=_on_close)
 
     def open_selected_item(self) -> None:
         item_id = self.get_selected_item_id()

@@ -3,7 +3,7 @@ import sqlite3
 import sys
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 DB_FILENAME = "inventory.db"
 
@@ -247,6 +247,28 @@ def fetch_items(
         cursor = conn.execute(query, params)
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+def fetch_items_by_rug_numbers(rug_numbers: Sequence[str]) -> List[Dict[str, Any]]:
+    cleaned_numbers = [value.strip() for value in rug_numbers if value and value.strip()]
+    if not cleaned_numbers:
+        return []
+
+    unique_numbers = list(dict.fromkeys(cleaned_numbers))
+    placeholders = ",".join("?" for _ in unique_numbers)
+    query = (
+        "SELECT item_id, rug_no, sku, type, collection, brand, v_design, design, ground, border, size_label, st_size, area, "
+        "stock_location, godown, purchase_date, pv_no, vendor, sold_on, invoice_no, customer, status, payment_status, notes, "
+        "created_at, updated_at FROM item WHERE rug_no IN (" + placeholders + ")"
+    )
+
+    with get_connection() as conn:
+        cursor = conn.execute(query, unique_numbers)
+        rows = [dict(row) for row in cursor.fetchall()]
+
+    order_map = {number: index for index, number in enumerate(unique_numbers)}
+    rows.sort(key=lambda item: order_map.get(item.get("rug_no", ""), len(unique_numbers)))
+    return rows
 
 
 def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
