@@ -49,6 +49,32 @@ TABLE_COLUMNS: Dict[str, str] = {
     "updated_at": "TEXT DEFAULT (CURRENT_TIMESTAMP)",
 }
 
+UPDATABLE_FIELDS: Tuple[str, ...] = (
+    "rug_no",
+    "sku",
+    "type",
+    "collection",
+    "brand",
+    "v_design",
+    "design",
+    "ground",
+    "border",
+    "size_label",
+    "st_size",
+    "area",
+    "stock_location",
+    "godown",
+    "purchase_date",
+    "pv_no",
+    "vendor",
+    "sold_on",
+    "invoice_no",
+    "customer",
+    "status",
+    "payment_status",
+    "notes",
+)
+
 CREATE_ITEM_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS item (
     item_id TEXT PRIMARY KEY,
@@ -236,33 +262,8 @@ def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
 
 
 def update_item(item_data: Dict[str, Any]) -> None:
-    fields = [
-        "rug_no",
-        "sku",
-        "type",
-        "collection",
-        "brand",
-        "v_design",
-        "design",
-        "ground",
-        "border",
-        "size_label",
-        "st_size",
-        "area",
-        "stock_location",
-        "godown",
-        "purchase_date",
-        "pv_no",
-        "vendor",
-        "sold_on",
-        "invoice_no",
-        "customer",
-        "status",
-        "payment_status",
-        "notes",
-    ]
-    set_clause = ", ".join(f"{field} = ?" for field in fields)
-    params = [item_data.get(field) for field in fields]
+    set_clause = ", ".join(f"{field} = ?" for field in UPDATABLE_FIELDS)
+    params = [item_data.get(field) for field in UPDATABLE_FIELDS]
     params.append(item_data["item_id"])
 
     with get_connection() as conn:
@@ -276,31 +277,7 @@ def update_item(item_data: Dict[str, Any]) -> None:
 def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
     """Upsert an item and return a tuple of (item_id, created)."""
 
-    updatable_fields = [
-        "rug_no",
-        "sku",
-        "type",
-        "collection",
-        "brand",
-        "v_design",
-        "design",
-        "ground",
-        "border",
-        "size_label",
-        "st_size",
-        "area",
-        "stock_location",
-        "godown",
-        "purchase_date",
-        "pv_no",
-        "vendor",
-        "sold_on",
-        "invoice_no",
-        "customer",
-        "status",
-        "payment_status",
-        "notes",
-    ]
+    updatable_fields = list(UPDATABLE_FIELDS)
 
     set_clause = ", ".join(f"{field} = ?" for field in updatable_fields)
 
@@ -362,6 +339,44 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
         )
         conn.commit()
         return new_item_id, True
+
+
+def insert_item(item_data: Dict[str, Any]) -> str:
+    """Insert a new item into the database and return its identifier."""
+
+    item_id = item_data.get("item_id") or str(uuid.uuid4())
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    insert_fields = ["item_id", *UPDATABLE_FIELDS, "created_at", "updated_at"]
+    insert_values = [
+        item_id,
+        *[item_data.get(field) for field in UPDATABLE_FIELDS],
+        now,
+        now,
+    ]
+    placeholders = ", ".join("?" for _ in insert_fields)
+
+    with get_connection() as conn:
+        conn.execute(
+            f"INSERT INTO item ({', '.join(insert_fields)}) VALUES ({placeholders})",
+            insert_values,
+        )
+        conn.commit()
+
+    return item_id
+
+
+def delete_item(item_id: str) -> None:
+    """Remove an item from the database."""
+
+    with get_connection() as conn:
+        conn.execute("DELETE FROM item WHERE item_id = ?", (item_id,))
+        conn.commit()
+
+
+def generate_item_id() -> str:
+    """Generate a short unique identifier for a new item."""
+
+    return f"ITEM-{uuid.uuid4().hex[:8].upper()}"
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
