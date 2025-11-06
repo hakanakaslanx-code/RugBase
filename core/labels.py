@@ -44,7 +44,10 @@ def _draw_label(canv: canvas.Canvas, item: Mapping[str, object]) -> None:
     current_y -= 12
 
     canv.setFont("Helvetica", 9)
-    color_text = " / ".join(filter(None, [ground, border]))
+    if ground and border:
+        color_text = f"{ground}/{border}"
+    else:
+        color_text = ground or border
     canv.drawString(text_x, current_y, color_text)
     current_y -= 11
 
