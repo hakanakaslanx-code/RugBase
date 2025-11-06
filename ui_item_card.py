@@ -19,15 +19,29 @@ class ItemCardWindow:
             "item_id",
             "rug_no",
             "sku",
+            "type",
             "collection",
             "brand",
+            "v_design",
             "design",
             "ground",
             "border",
             "size_label",
+            "st_size",
             "area",
             "stock_location",
+            "godown",
+            "purchase_date",
+            "pv_no",
+            "vendor",
+            "sold_on",
+            "invoice_no",
+            "customer",
             "status",
+            "payment_status",
+            "notes",
+            "created_at",
+            "updated_at",
         ]
 
         self.vars: Dict[str, tk.StringVar] = {}
@@ -47,7 +61,7 @@ class ItemCardWindow:
             entry = ttk.Entry(container, textvariable=var, width=40)
             entry.grid(row=idx, column=1, sticky=tk.W, pady=3)
 
-            if field == "item_id":
+            if field in {"item_id", "created_at", "updated_at"}:
                 entry.configure(state="readonly")
 
             self.vars[field] = var
@@ -73,6 +87,11 @@ class ItemCardWindow:
 
     def _on_save(self) -> None:
         item_data = {field: self.vars[field].get().strip() for field in self.fields}
+        for field, value in list(item_data.items()):
+            if field in {"item_id", "area"}:
+                continue
+            if value == "":
+                item_data[field] = None
         area_value = item_data.get("area")
         if area_value:
             try:

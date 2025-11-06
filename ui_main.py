@@ -4,6 +4,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 import db
+from core import importer
 from ui_item_card import ItemCardWindow
 from openpyxl import Workbook
 
@@ -38,8 +39,14 @@ class MainWindow:
         self.export_frame = ttk.Frame(self.root, padding=(10, 0, 10, 5))
         self.export_frame.pack(fill=tk.X)
 
+        self.import_csv_button = ttk.Button(self.export_frame, text="Import CSV", command=self.on_import_csv)
+        self.import_csv_button.pack(side=tk.LEFT)
+
+        self.import_xml_button = ttk.Button(self.export_frame, text="Import XML", command=self.on_import_xml)
+        self.import_xml_button.pack(side=tk.LEFT, padx=(10, 0))
+
         self.export_csv_button = ttk.Button(self.export_frame, text="Export CSV", command=self.on_export_csv)
-        self.export_csv_button.pack(side=tk.LEFT)
+        self.export_csv_button.pack(side=tk.LEFT, padx=(10, 0))
 
         self.export_xlsx_button = ttk.Button(self.export_frame, text="Export XLSX", command=self.on_export_xlsx)
         self.export_xlsx_button.pack(side=tk.LEFT, padx=(10, 0))
@@ -193,3 +200,47 @@ class MainWindow:
             workbook.save(file_path)
         except OSError as exc:
             messagebox.showerror("Export XLSX", f"Failed to export XLSX: {exc}")
+
+    def _handle_import_result(self, result: importer.ImportResult, title: str) -> None:
+        self.load_items()
+        messagebox.showinfo(
+            title,
+            (
+                f"Processed {result.total} rows.\n"
+                f"Inserted: {result.inserted}\n"
+                f"Updated: {result.updated}\n"
+                f"Skipped: {result.skipped}"
+            ),
+        )
+
+    def on_import_csv(self) -> None:
+        file_path = filedialog.askopenfilename(
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            title="Import CSV",
+        )
+        if not file_path:
+            return
+
+        try:
+            result = importer.import_csv(file_path)
+        except importer.ImporterError as exc:
+            messagebox.showerror("Import CSV", str(exc))
+            return
+
+        self._handle_import_result(result, "Import CSV")
+
+    def on_import_xml(self) -> None:
+        file_path = filedialog.askopenfilename(
+            filetypes=(("XML files", "*.xml"), ("All files", "*.*")),
+            title="Import XML",
+        )
+        if not file_path:
+            return
+
+        try:
+            result = importer.import_xml(file_path)
+        except importer.ImporterError as exc:
+            messagebox.showerror("Import XML", str(exc))
+            return
+
+        self._handle_import_result(result, "Import XML")
