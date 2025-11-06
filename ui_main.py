@@ -8,14 +8,17 @@ import db
 from core import importer, updater
 from core.version import __version__
 from ui_item_card import ItemCardWindow
+from ui_label_generator import LabelGeneratorWindow
 from core.excel import Workbook
 
 
 class MainWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self.label_window: Optional[LabelGeneratorWindow] = None
         self._create_widgets()
         self.load_items()
+        self.root.bind("<Control-l>", self.on_open_label_generator)
 
     def _create_widgets(self) -> None:
         self.filter_frame = ttk.Frame(self.root, padding=10)
@@ -82,6 +85,13 @@ class MainWindow:
         self.add_button = ttk.Button(self.button_frame, text="Add Item", command=self.on_add_item)
         self.add_button.pack(side=tk.LEFT)
 
+        self.label_button = ttk.Button(
+            self.button_frame,
+            text="Etiket Oluştur (Dymo)",
+            command=self.open_label_generator,
+        )
+        self.label_button.pack(side=tk.LEFT, padx=(10, 0))
+
         self.delete_button = ttk.Button(
             self.button_frame, text="Delete Item", command=self.on_delete_item
         )
@@ -132,6 +142,18 @@ class MainWindow:
 
     def on_add_item(self) -> None:
         ItemCardWindow(self.root, None, on_save=self.load_items)
+
+    def open_label_generator(self) -> None:
+        if self.label_window and self.label_window.window.winfo_exists():
+            self.label_window.window.focus_set()
+            return
+        self.label_window = LabelGeneratorWindow(self.root, on_close=self._clear_label_window)
+
+    def on_open_label_generator(self, _event: tk.Event) -> None:
+        self.open_label_generator()
+
+    def _clear_label_window(self) -> None:
+        self.label_window = None
 
     def get_selected_item_id(self) -> Optional[str]:
         selected = self.tree.selection()

@@ -222,6 +222,59 @@ def fetch_items(
         return [dict(row) for row in rows]
 
 
+def search_items_for_labels(
+    rug_no: Optional[str] = None,
+    collection: Optional[str] = None,
+    design: Optional[str] = None,
+    color: Optional[str] = None,
+    size: Optional[str] = None,
+    origin: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
+    query = f"SELECT {', '.join(select_fields)} FROM item"
+    filters: List[str] = []
+    params: List[Any] = []
+
+    def _add_filter(field: str, value: Optional[str]) -> None:
+        if value:
+            filters.append(f"LOWER({field}) LIKE ?")
+            params.append(f"%{value.lower()}%")
+
+    _add_filter("rug_no", rug_no)
+    _add_filter("collection", collection)
+    _add_filter("design", design)
+    if color:
+        filters.append("(LOWER(ground) LIKE ? OR LOWER(border) LIKE ?)")
+        params.extend([f"%{color.lower()}%", f"%{color.lower()}%"])
+    _add_filter("st_size", size)
+    _add_filter("origin", origin)
+
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+
+    query += " ORDER BY rug_no"
+
+    with get_connection() as conn:
+        cursor = conn.execute(query, params)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+def fetch_distinct_values(field: str) -> List[str]:
+    if field not in MASTER_SHEET_FIELDS:
+        raise ValueError(f"Bilinmeyen alan: {field}")
+
+    query = (
+        f"SELECT DISTINCT {field} FROM item "
+        f"WHERE {field} IS NOT NULL AND TRIM({field}) != '' ORDER BY {field}"
+    )
+
+    with get_connection() as conn:
+        cursor = conn.execute(query)
+        values = [row[0] for row in cursor.fetchall() if row[0] is not None]
+        return [str(value) for value in values]
+
+
 def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
     select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
     query = f"SELECT {', '.join(select_fields)} FROM item WHERE item_id = ?"
