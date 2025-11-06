@@ -1,4 +1,5 @@
 import csv
+import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
@@ -10,12 +11,14 @@ from core.version import __version__
 from ui_item_card import ItemCardWindow
 from ui_label_generator import LabelGeneratorWindow
 from core.excel import Workbook
+from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
 
 
 class MainWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
+        self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
         self._create_widgets()
         self.load_items()
         self.root.bind("<Control-l>", self.on_open_label_generator)
@@ -92,10 +95,31 @@ class MainWindow:
         )
         self.label_button.pack(side=tk.LEFT, padx=(10, 0))
 
+        self.consignment_button = ttk.Button(
+            self.button_frame,
+            text="Consignment",
+            command=self.open_consignment_modal,
+        )
+        self.consignment_button.pack(side=tk.LEFT, padx=(10, 0))
+
+        self.return_button = ttk.Button(
+            self.button_frame,
+            text="Return Items",
+            command=self.open_return_modal,
+        )
+        self.return_button.pack(side=tk.LEFT, padx=(10, 0))
+
         self.delete_button = ttk.Button(
             self.button_frame, text="Delete Item", command=self.on_delete_item
         )
         self.delete_button.pack(side=tk.LEFT, padx=(10, 0))
+
+        self.consignment_list_button = ttk.Button(
+            self.button_frame,
+            text="Consignment List",
+            command=self.open_consignment_list,
+        )
+        self.consignment_list_button.pack(side=tk.LEFT, padx=(10, 0))
 
         self.open_button = ttk.Button(self.button_frame, text="Open Item", command=self.on_open_item)
         self.open_button.pack(side=tk.RIGHT)
@@ -154,6 +178,15 @@ class MainWindow:
 
     def _clear_label_window(self) -> None:
         self.label_window = None
+
+    def open_consignment_modal(self) -> None:
+        ConsignmentModal(self.root, self.current_user)
+
+    def open_return_modal(self) -> None:
+        ReturnModal(self.root, self.current_user)
+
+    def open_consignment_list(self) -> None:
+        ConsignmentListWindow(self.root)
 
     def get_selected_item_id(self) -> Optional[str]:
         selected = self.tree.selection()
