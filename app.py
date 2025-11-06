@@ -1,13 +1,14 @@
 import tkinter as tk
 
 import db
+from core.version import __version__
 from ui_main import MainWindow
 
 
-def main():
+def main() -> None:
     db.initialize_database()
     root = tk.Tk()
-    root.title("RugBase Inventory")
+    root.title(f"RugBase Inventory v{__version__}")
     root.geometry("1000x600")
     MainWindow(root)
     root.mainloop()
