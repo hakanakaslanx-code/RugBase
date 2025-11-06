@@ -1,9 +1,11 @@
+import csv
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 import db
 from ui_item_card import ItemCardWindow
+from openpyxl import Workbook
 
 
 class MainWindow:
@@ -33,10 +35,19 @@ class MainWindow:
 
         self.filter_frame.columnconfigure(7, weight=1)
 
+        self.export_frame = ttk.Frame(self.root, padding=(10, 0, 10, 5))
+        self.export_frame.pack(fill=tk.X)
+
+        self.export_csv_button = ttk.Button(self.export_frame, text="Export CSV", command=self.on_export_csv)
+        self.export_csv_button.pack(side=tk.LEFT)
+
+        self.export_xlsx_button = ttk.Button(self.export_frame, text="Export XLSX", command=self.on_export_xlsx)
+        self.export_xlsx_button.pack(side=tk.LEFT, padx=(10, 0))
+
         self.table_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         self.table_frame.pack(fill=tk.BOTH, expand=True)
 
-        columns = (
+        self.columns = (
             "rug_no",
             "sku",
             "collection",
@@ -48,8 +59,8 @@ class MainWindow:
             "status",
         )
 
-        self.tree = ttk.Treeview(self.table_frame, columns=columns, show="headings", height=15)
-        for col in columns:
+        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", height=15)
+        for col in self.columns:
             self.tree.heading(col, text=col.replace("_", " ").title())
             self.tree.column(col, anchor=tk.W, width=120)
         self.tree.column("design", width=160)
@@ -72,32 +83,27 @@ class MainWindow:
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
-    def load_items(self) -> None:
-        collection_filter = self.collection_var.get().strip() or None
-        brand_filter = self.brand_var.get().strip() or None
-        status_filter = self.status_var.get().strip() or None
+        self.footer_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
+        self.footer_frame.pack(fill=tk.X)
 
+        self.totals_var = tk.StringVar(value="Total items: 0    Total area: 0.00")
+        self.totals_label = ttk.Label(self.footer_frame, textvariable=self.totals_var)
+        self.totals_label.pack(anchor=tk.W)
+
+    def load_items(self) -> None:
         for row in self.tree.get_children():
             self.tree.delete(row)
 
-        items = db.fetch_items(collection_filter, brand_filter, status_filter)
+        items = self.get_filtered_rows()
         for item in items:
             self.tree.insert(
                 "",
                 tk.END,
                 iid=item["item_id"],
-                values=(
-                    item["rug_no"],
-                    item["sku"],
-                    item["collection"],
-                    item["brand"],
-                    item["design"],
-                    item["size_label"],
-                    f"{item['area']:.2f}" if item["area"] is not None else "",
-                    item["stock_location"],
-                    item["status"],
-                ),
+                values=self._format_item_values(item),
             )
+
+        self.update_totals(items)
 
     def on_search(self) -> None:
         self.load_items()
@@ -121,3 +127,69 @@ class MainWindow:
             return
 
         ItemCardWindow(self.root, item_id, on_save=self.load_items)
+
+    def get_filtered_rows(self) -> list[dict]:
+        collection_filter = self.collection_var.get().strip() or None
+        brand_filter = self.brand_var.get().strip() or None
+        status_filter = self.status_var.get().strip() or None
+
+        return db.fetch_items(collection_filter, brand_filter, status_filter)
+
+    def _format_item_values(self, item: dict) -> tuple[str, ...]:
+        values = [
+            item["rug_no"],
+            item["sku"],
+            item["collection"],
+            item["brand"],
+            item["design"],
+            item["size_label"],
+            f"{item['area']:.2f}" if item["area"] is not None else "",
+            item["stock_location"],
+            item["status"],
+        ]
+        return tuple(values)
+
+    def update_totals(self, items: list[dict]) -> None:
+        total_items = len(items)
+        total_area = sum((item["area"] or 0.0) for item in items)
+        self.totals_var.set(f"Total items: {total_items}    Total area: {total_area:.2f}")
+
+    def on_export_csv(self) -> None:
+        items = self.get_filtered_rows()
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            title="Export CSV",
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow([self.tree.heading(col)["text"] for col in self.columns])
+                for item in items:
+                    writer.writerow(self._format_item_values(item))
+        except OSError as exc:
+            messagebox.showerror("Export CSV", f"Failed to export CSV: {exc}")
+
+    def on_export_xlsx(self) -> None:
+        items = self.get_filtered_rows()
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=(("Excel files", "*.xlsx"), ("All files", "*.*")),
+            title="Export XLSX",
+        )
+        if not file_path:
+            return
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append([self.tree.heading(col)["text"] for col in self.columns])
+        for item in items:
+            sheet.append(self._format_item_values(item))
+
+        try:
+            workbook.save(file_path)
+        except OSError as exc:
+            messagebox.showerror("Export XLSX", f"Failed to export XLSX: {exc}")
