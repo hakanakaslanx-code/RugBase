@@ -7,7 +7,7 @@ import db
 from core import importer, updater
 from core.version import __version__
 from ui_item_card import ItemCardWindow
-from openpyxl import Workbook
+from core.excel import Workbook
 
 
 class MainWindow:
