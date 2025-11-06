@@ -1,189 +1,167 @@
 import os
+import re
 import sqlite3
 import sys
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DB_FILENAME = "inventory.db"
 
 
-def _get_database_directory() -> str:
-    """Return a filesystem directory suitable for storing the SQLite DB."""
+def _get_base_directory() -> str:
+    """Return the base directory for storing runtime data files."""
 
-    if getattr(sys, "frozen", False):  # Running inside a PyInstaller bundle
+    if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 
-DB_PATH = os.path.join(_get_database_directory(), DB_FILENAME)
+def resource_path(*parts: str) -> str:
+    """Resolve a path relative to the application base directory."""
+
+    return os.path.join(_get_base_directory(), *parts)
 
 
-# Column name -> SQLite type/default clause (excluding NOT NULL/PRIMARY KEY handled separately)
-TABLE_COLUMNS: Dict[str, str] = {
-    "item_id": "TEXT PRIMARY KEY",
-    "rug_no": "TEXT",
-    "sku": "TEXT",
-    "type": "TEXT",
-    "collection": "TEXT",
-    "brand": "TEXT",
-    "v_design": "TEXT",
-    "design": "TEXT",
-    "ground": "TEXT",
-    "border": "TEXT",
-    "size_label": "TEXT",
-    "st_size": "TEXT",
-    "area": "REAL",
-    "stock_location": "TEXT",
-    "godown": "TEXT",
-    "purchase_date": "TEXT",
-    "pv_no": "TEXT",
-    "vendor": "TEXT",
-    "sold_on": "TEXT",
-    "invoice_no": "TEXT",
-    "customer": "TEXT",
-    "status": "TEXT",
-    "payment_status": "TEXT",
-    "notes": "TEXT",
-    "created_at": "TEXT DEFAULT (CURRENT_TIMESTAMP)",
-    "updated_at": "TEXT DEFAULT (CURRENT_TIMESTAMP)",
-}
+DB_PATH = resource_path(DB_FILENAME)
 
-UPDATABLE_FIELDS: Tuple[str, ...] = (
-    "rug_no",
-    "sku",
-    "type",
-    "collection",
-    "brand",
-    "v_design",
-    "design",
-    "ground",
-    "border",
-    "size_label",
-    "st_size",
-    "area",
-    "stock_location",
-    "godown",
-    "purchase_date",
-    "pv_no",
-    "vendor",
-    "sold_on",
-    "invoice_no",
-    "customer",
-    "status",
-    "payment_status",
-    "notes",
-)
 
-CREATE_ITEM_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS item (
-    item_id TEXT PRIMARY KEY,
-    rug_no TEXT,
-    sku TEXT,
-    type TEXT,
-    collection TEXT,
-    brand TEXT,
-    v_design TEXT,
-    design TEXT,
-    ground TEXT,
-    border TEXT,
-    size_label TEXT,
-    st_size TEXT,
-    area REAL,
-    stock_location TEXT,
-    godown TEXT,
-    purchase_date TEXT,
-    pv_no TEXT,
-    vendor TEXT,
-    sold_on TEXT,
-    invoice_no TEXT,
-    customer TEXT,
-    status TEXT,
-    payment_status TEXT,
-    notes TEXT,
-    created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-    updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-)
-"""
+MASTER_SHEET_COLUMNS: List[Tuple[str, str]] = [
+    ("rug_no", "RugNo"),
+    ("upc", "UPC"),
+    ("roll_no", "RollNo"),
+    ("v_rug_no", "VRugNo"),
+    ("v_collection", "Vcollection"),
+    ("collection", "Collection"),
+    ("v_design", "VDesign"),
+    ("design", "Design"),
+    ("brand_name", "Brandname"),
+    ("ground", "Ground"),
+    ("border", "Border"),
+    ("a_size", "ASize"),
+    ("st_size", "StSize"),
+    ("area", "Area"),
+    ("type", "Type"),
+    ("rate", "Rate"),
+    ("amount", "Amount"),
+    ("shape", "Shape"),
+    ("style", "Style"),
+    ("image_file_name", "ImageFileName"),
+    ("origin", "Origin"),
+    ("retail", "Retail"),
+    ("sp", "SP"),
+    ("msrp", "MSRP"),
+    ("cost", "Cost"),
+]
+
+MASTER_SHEET_FIELDS: Tuple[str, ...] = tuple(field for field, _ in MASTER_SHEET_COLUMNS)
+
+NUMERIC_FIELDS = {"area", "sp", "cost"}
+
+TABLE_COLUMNS: List[Tuple[str, str]] = [
+    ("item_id", "TEXT PRIMARY KEY"),
+    *[
+        (field, "REAL" if field in NUMERIC_FIELDS else "TEXT")
+        for field in MASTER_SHEET_FIELDS
+    ],
+    ("created_at", "TEXT DEFAULT (CURRENT_TIMESTAMP)"),
+    ("updated_at", "TEXT DEFAULT (CURRENT_TIMESTAMP)"),
+]
+
+UPDATABLE_FIELDS: Tuple[str, ...] = MASTER_SHEET_FIELDS
+
+
+def _build_create_table_sql(columns: Iterable[Tuple[str, str]]) -> str:
+    column_defs = ",\n".join(f"    {name} {definition}" for name, definition in columns)
+    return f"CREATE TABLE IF NOT EXISTS item (\n{column_defs}\n)"
+
+
+CREATE_ITEM_TABLE_SQL = _build_create_table_sql(TABLE_COLUMNS)
 
 SAMPLE_ITEMS = [
     {
         "item_id": "ITEM-001",
         "rug_no": "RUG-1001",
-        "sku": "SKU-1001",
-        "type": "Handmade",
+        "upc": "123456789012",
+        "roll_no": "RN-001",
+        "v_rug_no": "VR-2001",
+        "v_collection": "Vintage",
         "collection": "Heritage",
-        "brand": "RugMasters",
         "v_design": "Vintage Floral",
         "design": "Floral",
+        "brand_name": "RugMasters",
         "ground": "Blue",
         "border": "Cream",
-        "size_label": "5x8",
+        "a_size": "5x8",
         "st_size": "60x96",
         "area": 40.0,
-        "stock_location": "Warehouse A",
-        "godown": "Main",
-        "purchase_date": "2022-01-15",
-        "pv_no": "PV-001",
-        "vendor": "Heritage Suppliers",
-        "sold_on": None,
-        "invoice_no": None,
-        "customer": None,
-        "status": "In Stock",
-        "payment_status": "Pending",
-        "notes": "Prime display piece",
+        "type": "Handmade",
+        "rate": "45.00",
+        "amount": "1800.00",
+        "shape": "Rectangle",
+        "style": "Classic",
+        "image_file_name": "rug1001.jpg",
+        "origin": "India",
+        "retail": "2200.00",
+        "sp": 2000.0,
+        "msrp": "2500.00",
+        "cost": 1500.0,
     },
     {
         "item_id": "ITEM-002",
         "rug_no": "RUG-1002",
-        "sku": "SKU-1002",
-        "type": "Machine",
-        "collection": "Modern",
-        "brand": "UrbanRugs",
+        "upc": "223456789012",
+        "roll_no": "RN-002",
+        "v_rug_no": "VR-2002",
+        "v_collection": "Modern",
+        "collection": "Contemporary",
         "v_design": "Metro Geo",
         "design": "Geometric",
+        "brand_name": "UrbanRugs",
         "ground": "Gray",
         "border": "Black",
-        "size_label": "6x9",
+        "a_size": "6x9",
         "st_size": "72x108",
         "area": 54.0,
-        "stock_location": "Warehouse B",
-        "godown": "Secondary",
-        "purchase_date": "2022-06-20",
-        "pv_no": "PV-002",
-        "vendor": "Urban Suppliers",
-        "sold_on": None,
-        "invoice_no": None,
-        "customer": None,
-        "status": "Reserved",
-        "payment_status": "Pending",
-        "notes": "Reserved for client showcase",
+        "type": "Machine",
+        "rate": "30.00",
+        "amount": "1620.00",
+        "shape": "Rectangle",
+        "style": "Modern",
+        "image_file_name": "rug1002.jpg",
+        "origin": "Turkey",
+        "retail": "1900.00",
+        "sp": 1700.0,
+        "msrp": "2100.00",
+        "cost": 1200.0,
     },
     {
         "item_id": "ITEM-003",
         "rug_no": "RUG-1003",
-        "sku": "SKU-1003",
-        "type": "Handmade",
-        "collection": "Classic",
-        "brand": "RugMasters",
+        "upc": "323456789012",
+        "roll_no": "RN-003",
+        "v_rug_no": "VR-2003",
+        "v_collection": "Classic",
+        "collection": "Traditions",
         "v_design": "Royal Crest",
         "design": "Medallion",
+        "brand_name": "RugMasters",
         "ground": "Red",
         "border": "Gold",
-        "size_label": "8x10",
+        "a_size": "8x10",
         "st_size": "96x120",
         "area": 80.0,
-        "stock_location": "Showroom",
-        "godown": "Showroom",
-        "purchase_date": "2021-09-10",
-        "pv_no": "PV-003",
-        "vendor": "Classic Imports",
-        "sold_on": "2023-03-05",
-        "invoice_no": "INV-3001",
-        "customer": "James & Co.",
-        "status": "Sold",
-        "payment_status": "Paid",
-        "notes": "Delivered with premium padding",
+        "type": "Handmade",
+        "rate": "55.00",
+        "amount": "4400.00",
+        "shape": "Rectangle",
+        "style": "Traditional",
+        "image_file_name": "rug1003.jpg",
+        "origin": "Iran",
+        "retail": "5200.00",
+        "sp": 5000.0,
+        "msrp": "5600.00",
+        "cost": 3200.0,
     },
 ]
 
@@ -204,12 +182,10 @@ def initialize_database() -> None:
         cursor = conn.execute("SELECT COUNT(*) FROM item")
         count = cursor.fetchone()[0]
         if count == 0:
+            insert_fields = ["item_id", *MASTER_SHEET_FIELDS]
+            placeholders = ", ".join(f":{field}" for field in insert_fields)
             insert_item_sql = (
-                "INSERT INTO item (item_id, rug_no, sku, type, collection, brand, v_design, design, ground, border, "
-                "size_label, st_size, area, stock_location, godown, purchase_date, pv_no, vendor, sold_on, invoice_no, "
-                "customer, status, payment_status, notes) VALUES (:item_id, :rug_no, :sku, :type, :collection, :brand, :v_design, "
-                ":design, :ground, :border, :size_label, :st_size, :area, :stock_location, :godown, :purchase_date, :pv_no, :vendor, "
-                ":sold_on, :invoice_no, :customer, :status, :payment_status, :notes)"
+                f"INSERT INTO item ({', '.join(insert_fields)}) VALUES ({placeholders})"
             )
             conn.executemany(insert_item_sql, SAMPLE_ITEMS)
             conn.commit()
@@ -218,13 +194,10 @@ def initialize_database() -> None:
 def fetch_items(
     collection_filter: Optional[str] = None,
     brand_filter: Optional[str] = None,
-    status_filter: Optional[str] = None,
+    style_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    query = (
-        "SELECT item_id, rug_no, sku, type, collection, brand, v_design, design, ground, border, size_label, st_size, area, "
-        "stock_location, godown, purchase_date, pv_no, vendor, sold_on, invoice_no, customer, status, payment_status, notes, "
-        "created_at, updated_at FROM item"
-    )
+    select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
+    query = f"SELECT {', '.join(select_fields)} FROM item"
     filters = []
     params: List[Any] = []
 
@@ -232,11 +205,11 @@ def fetch_items(
         filters.append("LOWER(collection) LIKE ?")
         params.append(f"%{collection_filter.lower()}%")
     if brand_filter:
-        filters.append("LOWER(brand) LIKE ?")
+        filters.append("LOWER(brand_name) LIKE ?")
         params.append(f"%{brand_filter.lower()}%")
-    if status_filter:
-        filters.append("LOWER(status) LIKE ?")
-        params.append(f"%{status_filter.lower()}%")
+    if style_filter:
+        filters.append("LOWER(style) LIKE ?")
+        params.append(f"%{style_filter.lower()}%")
 
     if filters:
         query += " WHERE " + " AND ".join(filters)
@@ -250,13 +223,11 @@ def fetch_items(
 
 
 def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
+    select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
+    query = f"SELECT {', '.join(select_fields)} FROM item WHERE item_id = ?"
+
     with get_connection() as conn:
-        cursor = conn.execute(
-            "SELECT item_id, rug_no, sku, type, collection, brand, v_design, design, ground, border, size_label, st_size, area, "
-            "stock_location, godown, purchase_date, pv_no, vendor, sold_on, invoice_no, customer, status, payment_status, notes, "
-            "created_at, updated_at FROM item WHERE item_id = ?",
-            (item_id,),
-        )
+        cursor = conn.execute(query, (item_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -284,8 +255,10 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
     match_values: List[Tuple[str, Any]] = []
     if item_data.get("rug_no"):
         match_values.append(("rug_no", item_data["rug_no"]))
-    if item_data.get("sku"):
-        match_values.append(("sku", item_data["sku"]))
+    if item_data.get("upc"):
+        match_values.append(("upc", item_data["upc"]))
+    if item_data.get("roll_no"):
+        match_values.append(("roll_no", item_data["roll_no"]))
 
     with get_connection() as conn:
         item_id: Optional[str] = None
@@ -379,11 +352,86 @@ def generate_item_id() -> str:
     return f"ITEM-{uuid.uuid4().hex[:8].upper()}"
 
 
+def _parse_numeric(value: str) -> Optional[float]:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    normalized = cleaned.replace(" ", "")
+    try:
+        return float(normalized.replace(",", ""))
+    except ValueError:
+        if "," in normalized and "." not in normalized:
+            try:
+                return float(normalized.replace(",", "."))
+            except ValueError:
+                return None
+        return None
+
+
+def parse_numeric(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    return _parse_numeric(str(value))
+
+
+_DIMENSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+
+def _extract_dimensions(value: Optional[str]) -> Optional[Tuple[float, float]]:
+    if not value:
+        return None
+
+    cleaned = (
+        value.replace("×", "x")
+        .replace("X", "x")
+        .replace("'", " ")
+        .replace("\"", " ")
+        .replace("ft", " ")
+        .replace("FT", " ")
+    )
+    cleaned = cleaned.replace(",", ".")
+    numbers = _DIMENSION_PATTERN.findall(cleaned)
+    if len(numbers) < 2:
+        return None
+
+    try:
+        width = float(numbers[0])
+        height = float(numbers[1])
+    except ValueError:
+        return None
+
+    return width, height
+
+
+def calculate_area(
+    st_size: Optional[str],
+    area_value: Optional[str] = None,
+    a_size: Optional[str] = None,
+) -> Optional[float]:
+    """Calculate the area from the provided values following master sheet rules."""
+
+    for raw in (area_value,):
+        if raw is None:
+            continue
+        parsed = _parse_numeric(str(raw))
+        if parsed is not None:
+            return parsed
+
+    for dimensions_source in (st_size, a_size):
+        dimensions = _extract_dimensions(dimensions_source)
+        if dimensions:
+            width, height = dimensions
+            return round(width * height, 4)
+
+    return None
+
+
 def _ensure_columns(conn: sqlite3.Connection) -> None:
     cursor = conn.execute("PRAGMA table_info(item)")
     existing_columns = {row[1] for row in cursor.fetchall()}
 
-    for column, definition in TABLE_COLUMNS.items():
+    for column, definition in TABLE_COLUMNS:
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE item ADD COLUMN {column} {definition}")
 
