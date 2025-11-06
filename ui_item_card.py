@@ -28,6 +28,8 @@ class ItemCardWindow:
             "area",
             "stock_location",
             "status",
+            "notes",
+            "price_list",
         ]
 
         self.vars: Dict[str, tk.StringVar] = {}
@@ -82,6 +84,16 @@ class ItemCardWindow:
                 return
         else:
             item_data["area"] = None
+
+        price_value = item_data.get("price_list")
+        if price_value:
+            try:
+                item_data["price_list"] = float(price_value)
+            except ValueError:
+                messagebox.showerror("Invalid Price", "Price must be a number.")
+                return
+        else:
+            item_data["price_list"] = None
 
         db.update_item(item_data)
         messagebox.showinfo("Item Saved", "Item details have been updated.")

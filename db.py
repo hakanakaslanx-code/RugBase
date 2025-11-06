@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS item (
     size_label TEXT,
     area REAL,
     stock_location TEXT,
-    status TEXT
+    status TEXT,
+    notes TEXT,
+    price_list REAL
 )
 """
 
@@ -37,6 +39,8 @@ SAMPLE_ITEMS = [
         "area": 40.0,
         "stock_location": "Warehouse A",
         "status": "In Stock",
+        "notes": "Origin: Turkey\nContent: 100% Wool",
+        "price_list": 2479.0,
     },
     {
         "item_id": "ITEM-002",
@@ -51,6 +55,8 @@ SAMPLE_ITEMS = [
         "area": 54.0,
         "stock_location": "Warehouse B",
         "status": "Reserved",
+        "notes": "Origin: India\nContent: Wool & Viscose",
+        "price_list": 1899.5,
     },
     {
         "item_id": "ITEM-003",
@@ -65,6 +71,8 @@ SAMPLE_ITEMS = [
         "area": 80.0,
         "stock_location": "Showroom",
         "status": "Sold",
+        "notes": "Origin: Pakistan\nContent: Hand-Spun Wool",
+        "price_list": 3125.75,
     },
 ]
 
@@ -81,16 +89,30 @@ def initialize_database() -> None:
         os.makedirs(db_directory, exist_ok=True)
     with get_connection() as conn:
         conn.execute(CREATE_ITEM_TABLE_SQL)
+        _ensure_additional_columns(conn)
         cursor = conn.execute("SELECT COUNT(*) FROM item")
         count = cursor.fetchone()[0]
         if count == 0:
             insert_item_sql = (
                 "INSERT INTO item (item_id, rug_no, sku, collection, brand, design, ground, border, "
-                "size_label, area, stock_location, status) VALUES (:item_id, :rug_no, :sku, :collection, "
-                ":brand, :design, :ground, :border, :size_label, :area, :stock_location, :status)"
+                "size_label, area, stock_location, status, notes, price_list) VALUES "
+                "(:item_id, :rug_no, :sku, :collection, :brand, :design, :ground, :border, :size_label, :area, "
+                ":stock_location, :status, :notes, :price_list)"
             )
             conn.executemany(insert_item_sql, SAMPLE_ITEMS)
             conn.commit()
+
+
+def _ensure_additional_columns(conn: sqlite3.Connection) -> None:
+    cursor = conn.execute("PRAGMA table_info(item)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    required_columns = {
+        "notes": "TEXT",
+        "price_list": "REAL",
+    }
+    for column_name, column_type in required_columns.items():
+        if column_name not in existing_columns:
+            conn.execute(f"ALTER TABLE item ADD COLUMN {column_name} {column_type}")
 
 
 def fetch_items(
@@ -100,7 +122,7 @@ def fetch_items(
 ) -> List[Dict[str, Any]]:
     query = (
         "SELECT item_id, rug_no, sku, collection, brand, design, ground, border, size_label, area, "
-        "stock_location, status FROM item"
+        "stock_location, status, notes, price_list FROM item"
     )
     filters = []
     params: List[Any] = []
@@ -130,7 +152,7 @@ def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         cursor = conn.execute(
             "SELECT item_id, rug_no, sku, collection, brand, design, ground, border, size_label, area, "
-            "stock_location, status FROM item WHERE item_id = ?",
+            "stock_location, status, notes, price_list FROM item WHERE item_id = ?",
             (item_id,),
         )
         row = cursor.fetchone()
@@ -150,6 +172,8 @@ def update_item(item_data: Dict[str, Any]) -> None:
         "area",
         "stock_location",
         "status",
+        "notes",
+        "price_list",
     ]
     set_clause = ", ".join(f"{field} = ?" for field in fields)
     params = [item_data.get(field) for field in fields]
@@ -161,3 +185,21 @@ def update_item(item_data: Dict[str, Any]) -> None:
             params,
         )
         conn.commit()
+
+
+def fetch_items_by_ids(item_ids: List[str]) -> List[Dict[str, Any]]:
+    if not item_ids:
+        return []
+
+    placeholders = ",".join("?" for _ in item_ids)
+    query = (
+        "SELECT item_id, rug_no, sku, collection, brand, design, ground, border, size_label, area, "
+        "stock_location, status, notes, price_list FROM item WHERE item_id IN ("
+        + placeholders
+        + ") ORDER BY rug_no"
+    )
+
+    with get_connection() as conn:
+        cursor = conn.execute(query, item_ids)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]

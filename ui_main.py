@@ -5,6 +5,7 @@ from typing import Optional
 
 import db
 from ui_item_card import ItemCardWindow
+from ui_tag_printing import TagPrintingDialog
 from openpyxl import Workbook
 
 
@@ -59,7 +60,9 @@ class MainWindow:
             "status",
         )
 
-        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", height=15)
+        self.tree = ttk.Treeview(
+            self.table_frame, columns=self.columns, show="headings", height=15, selectmode="extended"
+        )
         for col in self.columns:
             self.tree.heading(col, text=col.replace("_", " ").title())
             self.tree.column(col, anchor=tk.W, width=120)
@@ -80,6 +83,11 @@ class MainWindow:
 
         self.open_button = ttk.Button(self.button_frame, text="Open Item", command=self.on_open_item)
         self.open_button.pack(anchor=tk.E)
+
+        self.print_tags_button = ttk.Button(
+            self.button_frame, text="Print Tags", command=self.on_print_tags
+        )
+        self.print_tags_button.pack(anchor=tk.E, pady=(5, 0))
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
@@ -120,6 +128,9 @@ class MainWindow:
             return None
         return selected[0]
 
+    def get_selected_item_ids(self) -> list[str]:
+        return list(self.tree.selection())
+
     def open_selected_item(self) -> None:
         item_id = self.get_selected_item_id()
         if not item_id:
@@ -127,6 +138,14 @@ class MainWindow:
             return
 
         ItemCardWindow(self.root, item_id, on_save=self.load_items)
+
+    def on_print_tags(self) -> None:
+        selected_ids = self.get_selected_item_ids()
+        if not selected_ids:
+            messagebox.showinfo("Print Tags", "Please select one or more items to print tags.")
+            return
+
+        TagPrintingDialog(self.root, selected_ids)
 
     def get_filtered_rows(self) -> list[dict]:
         collection_filter = self.collection_var.get().strip() or None
