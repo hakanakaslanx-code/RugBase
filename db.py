@@ -1,11 +1,22 @@
 import os
 import sqlite3
+import sys
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 DB_FILENAME = "inventory.db"
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), DB_FILENAME)
+
+
+def _get_database_directory() -> str:
+    """Return a filesystem directory suitable for storing the SQLite DB."""
+
+    if getattr(sys, "frozen", False):  # Running inside a PyInstaller bundle
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+DB_PATH = os.path.join(_get_database_directory(), DB_FILENAME)
 
 
 # Column name -> SQLite type/default clause (excluding NOT NULL/PRIMARY KEY handled separately)
