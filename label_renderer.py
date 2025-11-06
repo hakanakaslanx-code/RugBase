@@ -3,9 +3,22 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - optional dependency at runtime
+    Image = None  # type: ignore[assignment]
+    ImageDraw = None  # type: ignore[assignment]
+    ImageFont = None  # type: ignore[assignment]
+    PIL_AVAILABLE = False
+    PIL_IMPORT_MESSAGE = (
+        "Pillow (PIL) kütüphanesi bulunamadı. Etiket oluşturma özelliklerini "
+        "kullanmak için lütfen 'pip install Pillow' komutuyla Pillow kurulumunu tamamlayın."
+    )
+else:  # pragma: no cover - exercised when Pillow is installed
+    PIL_AVAILABLE = True
+    PIL_IMPORT_MESSAGE = ""
 
 import db
 from settings import DymoLabelSettings, FontSpec, load_settings
@@ -16,7 +29,7 @@ POINTS_PER_INCH = 72
 
 @dataclass
 class RenderResult:
-    image: Image.Image
+    image: Any
     warnings: List[str]
 
 
@@ -107,8 +120,14 @@ class Barcode39:
 class DymoLabelRenderer:
     def __init__(self) -> None:
         self.settings: DymoLabelSettings = load_settings()
-        self._font_cache: Dict[Tuple[str, int], ImageFont.ImageFont] = {}
+        self._font_cache: Dict[Tuple[str, int], Any] = {}
         self._pdf_dimensions: Optional[Tuple[float, float]] = None
+
+    @property
+    def pillow_available(self) -> bool:
+        """Return ``True`` when Pillow is installed."""
+
+        return PIL_AVAILABLE
 
     # region settings helpers
     def _mm_to_px(self, value_mm: float) -> int:
@@ -119,7 +138,9 @@ class DymoLabelRenderer:
         px = value_pt / POINTS_PER_INCH * self.settings.dpi
         return max(1, int(round(px)))
 
-    def _load_font(self, spec: FontSpec) -> Tuple[ImageFont.ImageFont, Optional[str]]:
+    def _load_font(self, spec: FontSpec) -> Tuple[Any, Optional[str]]:
+        if not PIL_AVAILABLE:
+            raise RuntimeError(PIL_IMPORT_MESSAGE)
         key = (spec.name, spec.size_pt)
         cached = self._font_cache.get(key)
         if cached:
@@ -230,6 +251,9 @@ class DymoLabelRenderer:
         return None
 
     def render(self, item: Dict[str, object]) -> RenderResult:
+        if not PIL_AVAILABLE:
+            raise RuntimeError(PIL_IMPORT_MESSAGE)
+
         width_px, height_px = self._canvas_size()
         image = Image.new("L", (width_px, height_px), color=255)
         draw = ImageDraw.Draw(image)
@@ -359,6 +383,8 @@ class DymoLabelRenderer:
         return RenderResult(image=image, warnings=warnings)
 
     def render_preview(self, item: Dict[str, object], max_width: int = 360) -> RenderResult:
+        if not PIL_AVAILABLE:
+            raise RuntimeError(PIL_IMPORT_MESSAGE)
         result = self.render(item)
         width, height = result.image.size
         if width > max_width:
@@ -370,8 +396,10 @@ class DymoLabelRenderer:
         return RenderResult(image=preview, warnings=result.warnings)
 
     def export_pdf(self, items: Sequence[Dict[str, object]], path: str) -> List[str]:
+        if not PIL_AVAILABLE:
+            raise RuntimeError(PIL_IMPORT_MESSAGE)
         warnings: List[str] = []
-        pages: List[Image.Image] = []
+        pages: List[Any] = []
         for item in items:
             result = self.render(item)
             pages.append(result.image)
@@ -383,11 +411,15 @@ class DymoLabelRenderer:
         return warnings
 
     def export_png(self, item: Dict[str, object], path: str) -> List[str]:
+        if not PIL_AVAILABLE:
+            raise RuntimeError(PIL_IMPORT_MESSAGE)
         result = self.render(item)
         result.image.save(path, "PNG", dpi=(self.settings.dpi, self.settings.dpi))
         return result.warnings
 
     def print_to_default(self, item: Dict[str, object]) -> List[str]:
+        if not PIL_AVAILABLE:
+            raise RuntimeError(PIL_IMPORT_MESSAGE)
         result = self.render(item)
         warnings = list(result.warnings)
         if os.name != "nt":
@@ -403,4 +435,4 @@ class DymoLabelRenderer:
         return warnings
 
 
-__all__ = ["DymoLabelRenderer", "RenderResult"]
+__all__ = ["DymoLabelRenderer", "RenderResult", "PIL_AVAILABLE", "PIL_IMPORT_MESSAGE"]

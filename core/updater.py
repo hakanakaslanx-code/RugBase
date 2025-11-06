@@ -44,6 +44,10 @@ class ReleaseInfo:
     def normalized_version(self) -> str:
         return _strip_version_prefix(self.tag)
 
+    @property
+    def is_archive(self) -> bool:
+        return self.asset_name.lower().endswith(".zip")
+
 
 @dataclass
 class UpdateStatus:
@@ -104,7 +108,7 @@ def download_release_asset(release: ReleaseInfo) -> pathlib.Path:
     return destination
 
 
-def prepare_updater(zip_path: pathlib.Path, release: ReleaseInfo) -> pathlib.Path:
+def prepare_updater(asset_path: pathlib.Path, release: ReleaseInfo) -> pathlib.Path:
     """Create the RugBase_Updater.bat script for the downloaded asset."""
 
     if os.name != "nt":  # pragma: no cover - updater is Windows specific
@@ -116,15 +120,16 @@ def prepare_updater(zip_path: pathlib.Path, release: ReleaseInfo) -> pathlib.Pat
     timestamp = time.strftime("%Y%m%d%H%M%S")
     backup_name = f"{exe_path.stem}_backup_{version_tag}_{timestamp}{exe_path.suffix or '.bak'}"
 
-    updater_dir = zip_path.parent
+    updater_dir = asset_path.parent
     script_path = updater_dir / "RugBase_Updater.bat"
 
     script_contents = _build_updater_script(
-        zip_path=zip_path,
+        asset_path=asset_path,
         install_dir=install_dir,
         exe_name=exe_path.name,
         backup_name=backup_name,
         version_label=release.normalized_version,
+        is_archive=release.is_archive,
     )
 
     try:
@@ -174,13 +179,13 @@ def check_for_updates(parent: Optional[object] = None) -> bool:
         return False
 
     try:
-        zip_path = download_release_asset(status.release)
+        asset_path = download_release_asset(status.release)
     except UpdateError as exc:
         _notify_user("Check for Updates", str(exc), parent, error=True)
         return False
 
     try:
-        script_path = prepare_updater(zip_path, status.release)
+        script_path = prepare_updater(asset_path, status.release)
     except UpdateError as exc:
         _notify_user("Check for Updates", str(exc), parent, error=True)
         return False
@@ -227,19 +232,30 @@ def _fetch_latest_release() -> Optional[ReleaseInfo]:
 
     asset_url = ""
     asset_name = ""
+    fallback_url = ""
+    fallback_name = ""
     for asset in assets:
         name = str(asset.get("name") or "")
         download_url = str(asset.get("browser_download_url") or "")
-        if name.lower().endswith(".zip") and download_url:
+        if not download_url:
+            continue
+        if name.lower().endswith(".zip"):
             asset_name = name
             asset_url = download_url
             break
+        if not fallback_url:
+            fallback_name = name or f"RugBase-{tag}"
+            fallback_url = download_url
 
     if not tag:
         raise UpdateError("Latest release on GitHub does not have a tag name.")
 
     if not asset_url:
-        raise UpdateError("Latest release does not contain a .zip asset to download.")
+        if fallback_url:
+            asset_name = fallback_name
+            asset_url = fallback_url
+        else:
+            raise UpdateError("Latest release does not provide a downloadable asset.")
 
     return ReleaseInfo(tag=tag, asset_name=asset_name or f"RugBase-{tag}.zip", asset_url=asset_url)
 
@@ -299,58 +315,90 @@ def _sanitize_for_filename(value: str) -> str:
 
 def _build_updater_script(
     *,
-    zip_path: pathlib.Path,
+    asset_path: pathlib.Path,
     install_dir: pathlib.Path,
     exe_name: str,
     backup_name: str,
     version_label: str,
+    is_archive: bool,
 ) -> str:
-    zip_path = zip_path.resolve()
+    asset_path = asset_path.resolve()
     install_dir = install_dir.resolve()
 
-    return "\r\n".join(
+    commands: list[str] = [
+        "@echo off",
+        "setlocal enableextensions enabledelayedexpansion",
+        f'set "ASSET_FILE={asset_path}"',
+        f'set "INSTALL_DIR={install_dir}"',
+        f'set "EXE_NAME={exe_name}"',
+        f'set "BACKUP_NAME={backup_name}"',
+        f'set "UPDATE_VERSION={version_label}"',
+    ]
+
+    if is_archive:
+        commands.extend(
+            [
+                'set "EXTRACT_DIR=%TEMP%\\RugBase_Update_%RANDOM%_%RANDOM%"',
+                'if exist "%EXTRACT_DIR%" rd /s /q "%EXTRACT_DIR%"',
+                'mkdir "%EXTRACT_DIR%" >nul 2>&1',
+            ]
+        )
+
+    commands.extend(
         [
-            "@echo off",
-            "setlocal enableextensions enabledelayedexpansion",
-            f'set "ZIP_FILE={zip_path}"',
-            f'set "INSTALL_DIR={install_dir}"',
-            f'set "EXE_NAME={exe_name}"',
-            f'set "BACKUP_NAME={backup_name}"',
-            f'set "UPDATE_VERSION={version_label}"',
-            'set "EXTRACT_DIR=%TEMP%\\RugBase_Update_%RANDOM%_%RANDOM%"',
-            "if exist \"%EXTRACT_DIR%\" rd /s /q \"%EXTRACT_DIR%\"",
-            "mkdir \"%EXTRACT_DIR%\" >nul 2>&1",
             ":wait_for_exit",
             'move /Y "%INSTALL_DIR%\\%EXE_NAME%" "%INSTALL_DIR%\\%BACKUP_NAME%" >nul 2>&1',
             'if exist "%INSTALL_DIR%\\%EXE_NAME%" (',
             '  timeout /t 1 /nobreak >nul',
             '  goto wait_for_exit',
             ")",
-            'powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''%ZIP_FILE%'' -DestinationPath ''%EXTRACT_DIR%'' -Force" >nul 2>&1',
-            "if errorlevel 1 goto restore_backup",
-            'set "NEW_EXE="',
-            'for /r "%EXTRACT_DIR%" %%F in (*.exe) do (',
-            '  set "NEW_EXE=%%~fF"',
-            '  goto found_exe',
-            ")",
-            "goto restore_backup",
-            ":found_exe",
-            'if not defined NEW_EXE goto restore_backup',
-            'copy /Y "!NEW_EXE!" "%INSTALL_DIR%\\%EXE_NAME%" >nul 2>&1',
-            "if errorlevel 1 goto restore_backup",
+        ]
+    )
+
+    if is_archive:
+        commands.extend(
+            [
+                'powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''%ASSET_FILE%'' -DestinationPath ''%EXTRACT_DIR%'' -Force" >nul 2>&1',
+                "if errorlevel 1 goto restore_backup",
+                'set "NEW_EXE="',
+                'for /r "%EXTRACT_DIR%" %%F in (*.exe) do (',
+                '  set "NEW_EXE=%%~fF"',
+                '  goto found_exe',
+                ")",
+                "goto restore_backup",
+                ":found_exe",
+                'if not defined NEW_EXE goto restore_backup',
+                'copy /Y "!NEW_EXE!" "%INSTALL_DIR%\\%EXE_NAME%" >nul 2>&1',
+                "if errorlevel 1 goto restore_backup",
+            ]
+        )
+    else:
+        commands.extend(
+            [
+                'copy /Y "%ASSET_FILE%" "%INSTALL_DIR%\\%EXE_NAME%" >nul 2>&1',
+                "if errorlevel 1 goto restore_backup",
+            ]
+        )
+
+    commands.extend(
+        [
             'start "" "%INSTALL_DIR%\\%EXE_NAME%"',
             "goto cleanup",
             ":restore_backup",
             'if exist "%INSTALL_DIR%\\%BACKUP_NAME%" move /Y "%INSTALL_DIR%\\%BACKUP_NAME%" "%INSTALL_DIR%\\%EXE_NAME%" >nul 2>&1',
             ":cleanup",
-            'if exist "%EXTRACT_DIR%" rd /s /q "%EXTRACT_DIR%"',
-            'if exist "%ZIP_FILE%" del "%ZIP_FILE%"',
-            'if exist "%INSTALL_DIR%\\%BACKUP_NAME%" del "%INSTALL_DIR%\\%BACKUP_NAME%"',
-            "endlocal",
-            'del "%~f0"',
-            "",
         ]
     )
+
+    if is_archive:
+        commands.append('if exist "%EXTRACT_DIR%" rd /s /q "%EXTRACT_DIR%"')
+    commands.append('if exist "%ASSET_FILE%" del "%ASSET_FILE%"')
+    commands.append('if exist "%INSTALL_DIR%\\%BACKUP_NAME%" del "%INSTALL_DIR%\\%BACKUP_NAME%"')
+    commands.append("endlocal")
+    commands.append('del "%~f0"')
+    commands.append("")
+
+    return "\r\n".join(commands)
 
 
 def _notify_user(title: str, message: str, parent: Optional[object], *, error: bool = False) -> None:
