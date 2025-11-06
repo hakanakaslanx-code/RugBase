@@ -4,7 +4,8 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 import db
-from core import importer
+from core import importer, updater
+from core.version import __version__
 from ui_item_card import ItemCardWindow
 from openpyxl import Workbook
 
@@ -103,7 +104,13 @@ class MainWindow:
 
         self.totals_var = tk.StringVar(value="Total items: 0    Total area: 0.00")
         self.totals_label = ttk.Label(self.footer_frame, textvariable=self.totals_var)
-        self.totals_label.pack(anchor=tk.W)
+        self.totals_label.pack(side=tk.LEFT)
+
+        self.update_button = ttk.Button(self.footer_frame, text="Check for Updates", command=self.on_check_for_updates)
+        self.update_button.pack(side=tk.RIGHT)
+
+        self.version_label = ttk.Label(self.footer_frame, text=f"Version {__version__}")
+        self.version_label.pack(side=tk.RIGHT, padx=(0, 10))
 
     def load_items(self) -> None:
         for row in self.tree.get_children():
@@ -235,6 +242,11 @@ class MainWindow:
             workbook.save(file_path)
         except OSError as exc:
             messagebox.showerror("Export XLSX", f"Failed to export XLSX: {exc}")
+
+    def on_check_for_updates(self) -> None:
+        """Prompt the user to download the latest RugBase release."""
+
+        updater.prompt_for_update(self.root)
 
     def _handle_import_result(self, result: importer.ImportResult, title: str) -> None:
         self.load_items()
