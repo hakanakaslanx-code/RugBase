@@ -3,11 +3,11 @@ from __future__ import annotations
 import math
 import os
 import re
-import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from core import dependencies
 
 Image = None  # type: ignore[assignment]
 ImageDraw = None  # type: ignore[assignment]
@@ -37,61 +37,6 @@ PIL_AVAILABLE = _import_pillow()
 _PIL_INSTALL_ATTEMPTED = False
 
 
-def _run_subprocess(command: Sequence[str]) -> tuple[bool, str]:
-    """Execute ``command`` returning a success flag and combined output."""
-
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    output = (result.stdout or "").strip()
-    return result.returncode == 0, output
-
-
-def _install_dependency(package: str) -> tuple[bool, str]:
-    """Install ``package`` using pip, attempting to bootstrap pip when necessary."""
-
-    def _pip_args(*extra: str) -> List[str]:
-        return [
-            sys.executable,
-            "-m",
-            "pip",
-            "--disable-pip-version-check",
-            "install",
-            package,
-            *extra,
-        ]
-
-    success, output = _run_subprocess(_pip_args())
-    if success:
-        return True, output
-
-    lowered = output.lower()
-    pip_missing = "no module named pip" in lowered or "pip is not recognized" in lowered
-    if pip_missing:
-        ensure_success, ensure_output = _run_subprocess(
-            [sys.executable, "-m", "ensurepip", "--upgrade"]
-        )
-        if not ensure_success:
-            details = ensure_output or output
-            return False, f"pip could not be bootstrapped: {details}"
-        success, output = _run_subprocess(_pip_args())
-        if success:
-            return True, output
-
-    permission_error = any(keyword in lowered for keyword in ("permission", "access is denied"))
-    if permission_error:
-        success, user_output = _run_subprocess(_pip_args("--user"))
-        if success:
-            return True, user_output
-        output = f"{output}\n{user_output}".strip()
-
-    return False, output
-
-
 def ensure_pillow() -> bool:
     """Ensure Pillow is installed and imported, attempting automatic installation."""
 
@@ -101,7 +46,7 @@ def ensure_pillow() -> bool:
 
     if not _PIL_INSTALL_ATTEMPTED:
         _PIL_INSTALL_ATTEMPTED = True
-        success, message = _install_dependency("Pillow")
+        success, message = dependencies.install_packages(["Pillow"])
         if not success:
             PIL_IMPORT_MESSAGE = (
                 "Pillow (PIL) is required to generate labels and could not be installed automatically. "
