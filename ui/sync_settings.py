@@ -204,7 +204,11 @@ class SyncSettingsWindow:
 
         updated = dict(self.settings)
         updated.update(data)
-        drive_sync.save_settings(updated)
+        try:
+            drive_sync.save_settings(updated)
+        except RuntimeError as exc:
+            messagebox.showerror("Sync Settings", str(exc), parent=self.window)
+            return
         self.settings = updated
         self.status_var.set("Settings saved.")
 
