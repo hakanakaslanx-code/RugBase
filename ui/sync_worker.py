@@ -4,10 +4,16 @@ from __future__ import annotations
 import threading
 from typing import Callable, Optional
 
-from core import sync
+from core.drive_sync import (
+    DEFAULT_POLL_INTERVAL,
+    DriveSync,
+    SyncConfigurationError,
+    SyncResult,
+    get_poll_interval,
+)
 
 
-StatusCallback = Callable[[str, Optional[sync.SyncResult]], None]
+StatusCallback = Callable[[str, Optional[SyncResult]], None]
 
 
 class SyncWorker:
@@ -19,6 +25,7 @@ class SyncWorker:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._sync = DriveSync()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -42,9 +49,9 @@ class SyncWorker:
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             self._execute_sync()
-            interval = sync.get_poll_interval()
+            interval = get_poll_interval()
             if interval <= 0:
-                interval = sync.DEFAULT_POLL_INTERVAL
+                interval = DEFAULT_POLL_INTERVAL
             if self._stop_event.wait(interval):
                 break
 
@@ -53,9 +60,9 @@ class SyncWorker:
             return
         try:
             try:
-                result = sync.pull_and_apply()
-                message = self._format_sync_message(result)
-            except sync.SyncConfigurationError:
+                result = self._sync.sync_once()
+                message = result.message
+            except SyncConfigurationError:
                 result = None
                 message = "Drive sync is not configured."
             except Exception as exc:  # pragma: no cover - best effort logging
@@ -70,9 +77,9 @@ class SyncWorker:
             return
         try:
             try:
-                archive_name = sync.backup_now()
+                archive_name = self._sync.backup_local()
                 message = f"Backup uploaded: {archive_name}"
-            except sync.SyncConfigurationError:
+            except SyncConfigurationError:
                 message = "Drive sync is not configured."
             except Exception as exc:  # pragma: no cover - best effort logging
                 message = f"Backup failed: {exc}"
@@ -80,7 +87,7 @@ class SyncWorker:
             self._lock.release()
         self._dispatch_status(message, None)
 
-    def _dispatch_status(self, message: str, result: Optional[sync.SyncResult]) -> None:
+    def _dispatch_status(self, message: str, result: Optional[SyncResult]) -> None:
         if not self.status_callback:
             return
 
@@ -88,14 +95,3 @@ class SyncWorker:
             self.status_callback(message, result)
 
         self.root.after(0, callback)
-
-    @staticmethod
-    def _format_sync_message(result: sync.SyncResult) -> str:
-        timestamp = result.last_sync or "n/a"
-        conflict_part = (
-            f"; {result.total_conflicts} conflict(s)" if result.total_conflicts else ""
-        )
-        return (
-            f"Last sync: {timestamp} ({result.applied} change(s) applied, "
-            f"{result.processed} file(s) processed{conflict_part})"
-        )

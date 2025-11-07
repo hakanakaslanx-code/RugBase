@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-DB_FILENAME = "inventory.db"
+DB_FILENAME = "rugbase.db"
 
 
 def _get_base_directory() -> str:
@@ -438,8 +438,6 @@ def insert_item(item_data: Dict[str, Any]) -> str:
         )
         conn.commit()
 
-    _notify_item_upsert(item_id)
-
     return item_id
 
 
@@ -453,57 +451,11 @@ def delete_item(item_id: str) -> None:
         )
         conn.commit()
 
-    _notify_item_deleted(item_id)
-
 
 def generate_item_id() -> str:
     """Generate a short unique identifier for a new item."""
 
     return f"ITEM-{uuid.uuid4().hex[:8].upper()}"
-
-
-def _notify_item_upsert(item_id: str) -> None:
-    try:
-        from core import sync as sync_core  # Local import to avoid circular dependency
-    except Exception:
-        return
-
-    error_types = []
-    sync_error = getattr(sync_core, "SyncConfigurationError", None)
-    if isinstance(sync_error, type):
-        error_types.append(sync_error)
-    google_error = getattr(getattr(sync_core, "drive_api", None), "GoogleClientUnavailable", None)
-    if isinstance(google_error, type):
-        error_types.append(google_error)
-    config_error = tuple(error_types) or (RuntimeError,)
-    try:
-        sync_core.handle_local_upsert(item_id)
-    except config_error:
-        return
-    except Exception as exc:
-        print(f"[sync] Failed to push upsert for {item_id}: {exc}")
-
-
-def _notify_item_deleted(item_id: str) -> None:
-    try:
-        from core import sync as sync_core  # Local import to avoid circular dependency
-    except Exception:
-        return
-
-    error_types = []
-    sync_error = getattr(sync_core, "SyncConfigurationError", None)
-    if isinstance(sync_error, type):
-        error_types.append(sync_error)
-    google_error = getattr(getattr(sync_core, "drive_api", None), "GoogleClientUnavailable", None)
-    if isinstance(google_error, type):
-        error_types.append(google_error)
-    config_error = tuple(error_types) or (RuntimeError,)
-    try:
-        sync_core.handle_local_delete(item_id)
-    except config_error:
-        return
-    except Exception as exc:
-        print(f"[sync] Failed to push delete for {item_id}: {exc}")
 
 
 def _parse_numeric(value: str) -> Optional[float]:
