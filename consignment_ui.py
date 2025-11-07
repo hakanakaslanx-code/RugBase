@@ -52,15 +52,15 @@ class ConsignmentModal:
         container = ttk.Frame(self.window, padding=10)
         container.pack(fill=tk.BOTH, expand=True)
 
-        header = ttk.Label(container, text="Consignment İşlemleri", font=("Arial", 14, "bold"))
+        header = ttk.Label(container, text="Consignment Management", font=("Arial", 14, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
 
-        mode_frame = ttk.LabelFrame(container, text="Consignment Seçimi")
+        mode_frame = ttk.LabelFrame(container, text="Consignment Selection")
         mode_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Radiobutton(
             mode_frame,
-            text="Mevcut Consignment",
+            text="Existing Consignment",
             variable=self.mode_var,
             value="existing",
             command=self._on_mode_change,
@@ -68,13 +68,13 @@ class ConsignmentModal:
 
         ttk.Radiobutton(
             mode_frame,
-            text="Yeni Consignment",
+            text="New Consignment",
             variable=self.mode_var,
             value="new",
             command=self._on_mode_change,
         ).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
 
-        ttk.Label(mode_frame, text="Mevcut:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
+        ttk.Label(mode_frame, text="Existing:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
         self.existing_combo = ttk.Combobox(mode_frame, textvariable=self.existing_var, state="readonly", width=40)
         self.existing_combo.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
 
@@ -87,11 +87,11 @@ class ConsignmentModal:
         )
         self.partner_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
 
-        ttk.Label(mode_frame, text="İletişim:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
+        ttk.Label(mode_frame, text="Contact:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
         self.contact_entry = ttk.Entry(mode_frame, textvariable=self.contact_var, width=40)
         self.contact_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
 
-        ttk.Label(mode_frame, text="Notlar:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.E)
+        ttk.Label(mode_frame, text="Notes:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.E)
         self.notes_entry = ttk.Entry(mode_frame, textvariable=self.notes_var, width=40)
         self.notes_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
 
@@ -100,7 +100,7 @@ class ConsignmentModal:
         scan_frame = ttk.LabelFrame(container, text="Scan Mode")
         scan_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        ttk.Label(scan_frame, text="Barkod / RugNo:").pack(anchor=tk.W, padx=5, pady=(5, 0))
+        ttk.Label(scan_frame, text="Barcode / Rug #:").pack(anchor=tk.W, padx=5, pady=(5, 0))
         self.scan_entry = ttk.Entry(scan_frame)
         self.scan_entry.pack(fill=tk.X, padx=5, pady=5)
         bind_scanner(self.scan_entry, self._handle_scan)
@@ -111,7 +111,7 @@ class ConsignmentModal:
         columns = ("rug_no", "message")
         self.result_tree = ttk.Treeview(scan_frame, columns=columns, show="headings", height=10)
         self.result_tree.heading("rug_no", text="Rug No")
-        self.result_tree.heading("message", text="Durum")
+        self.result_tree.heading("message", text="Status")
         self.result_tree.column("rug_no", width=140)
         self.result_tree.column("message", width=360)
         self.result_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -119,7 +119,7 @@ class ConsignmentModal:
         button_frame = ttk.Frame(container)
         button_frame.pack(fill=tk.X)
 
-        ttk.Button(button_frame, text="Tamamla / Kapat", command=self.window.destroy).pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Finish / Close", command=self.window.destroy).pack(side=tk.RIGHT)
 
         self._on_mode_change()
 
@@ -153,9 +153,9 @@ class ConsignmentModal:
             widget.configure(state=state)
         if not is_new:
             self.active_consignment = None
-            self.status_var.set("Mevcut consignment seçildi.")
+            self.status_var.set("Existing consignment selected.")
         else:
-            self.status_var.set("Yeni consignment için partner bilgilerini girin.")
+            self.status_var.set("Enter partner details to create a new consignment.")
 
     def _append_result(self, rug_no: str, message: str) -> None:
         result = ScanResult(rug_no=rug_no, message=message)
@@ -168,7 +168,7 @@ class ConsignmentModal:
                 if not self.active_consignment:
                     partner = self.partner_var.get().strip()
                     if not partner:
-                        raise ValueError("Partner adı gerekli")
+                        raise ValueError("Partner name is required")
                     new_data = {
                         "partner_name": partner,
                         "partner_contact": self.contact_var.get().strip() or None,
@@ -185,7 +185,7 @@ class ConsignmentModal:
                     display = f"{consignment['consignment_ref']} - {consignment['partner_name']}"
                     self.existing_var.set(display)
                     self.status_var.set(
-                        f"Yeni consignment oluşturuldu: {consignment['consignment_ref']}"
+                        f"Created consignment: {consignment['consignment_ref']}"
                     )
                 else:
                     item, consignment = consignment_repo.process_scan(
@@ -197,19 +197,19 @@ class ConsignmentModal:
                 selected = self.existing_var.get()
                 consignment_id = self._existing_map.get(selected)
                 if not consignment_id:
-                    raise ValueError("Lütfen mevcut consignment seçin")
+                    raise ValueError("Please choose an existing consignment")
                 item, consignment = consignment_repo.process_scan(
                     rug_no,
                     self.user,
                     consignment_id=consignment_id,
                 )
-            message = f"Çıkış başarılı → {consignment['consignment_ref']}"
+            message = f"Checked out → {consignment['consignment_ref']}"
             self._append_result(rug_no, message)
             self.status_var.set(message)
         except Exception as exc:
             messagebox.showerror("Consignment", str(exc), parent=self.window)
-            self._append_result(rug_no, f"Hata: {exc}")
-            self.status_var.set(f"Hata: {exc}")
+            self._append_result(rug_no, f"Error: {exc}")
+            self.status_var.set(f"Error: {exc}")
 
 
 class ReturnModal:
@@ -233,13 +233,13 @@ class ReturnModal:
         container = ttk.Frame(self.window, padding=10)
         container.pack(fill=tk.BOTH, expand=True)
 
-        header = ttk.Label(container, text="Geri Dönüş Tarama", font=("Arial", 14, "bold"))
+        header = ttk.Label(container, text="Consignment Return Scanning", font=("Arial", 14, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
 
         scan_frame = ttk.LabelFrame(container, text="Scan Mode")
         scan_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        ttk.Label(scan_frame, text="Barkod / RugNo:").pack(anchor=tk.W, padx=5, pady=(5, 0))
+        ttk.Label(scan_frame, text="Barcode / Rug #:").pack(anchor=tk.W, padx=5, pady=(5, 0))
         self.scan_entry = ttk.Entry(scan_frame)
         self.scan_entry.pack(fill=tk.X, padx=5, pady=5)
         bind_scanner(self.scan_entry, self._handle_scan)
@@ -250,12 +250,12 @@ class ReturnModal:
         columns = ("rug_no", "message")
         self.result_tree = ttk.Treeview(scan_frame, columns=columns, show="headings", height=12)
         self.result_tree.heading("rug_no", text="Rug No")
-        self.result_tree.heading("message", text="Durum")
+        self.result_tree.heading("message", text="Status")
         self.result_tree.column("rug_no", width=150)
         self.result_tree.column("message", width=320)
         self.result_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        ttk.Button(container, text="Tamamla / Kapat", command=self.window.destroy).pack(
+        ttk.Button(container, text="Finish / Close", command=self.window.destroy).pack(
             anchor=tk.E
         )
 
@@ -269,16 +269,16 @@ class ReturnModal:
             item, consignment = consignment_repo.process_return_scan(rug_no, self.user)
             self._append_result(
                 rug_no,
-                f"Geri alındı ← {consignment['consignment_ref']}",
+                f"Returned ← {consignment['consignment_ref']}",
             )
             self.status_label.configure(
-                text=f"Son işlem: {rug_no} → {consignment['consignment_ref']}",
+                text=f"Last action: {rug_no} → {consignment['consignment_ref']}",
                 foreground="blue",
             )
         except Exception as exc:
             messagebox.showerror("Return", str(exc), parent=self.window)
-            self._append_result(rug_no, f"Hata: {exc}")
-            self.status_label.configure(text=f"Hata: {exc}", foreground="red")
+            self._append_result(rug_no, f"Error: {exc}")
+            self.status_label.configure(text=f"Error: {exc}", foreground="red")
 
 
 class ConsignmentDetailWindow:
@@ -288,7 +288,7 @@ class ConsignmentDetailWindow:
         self.master = master
         self.consignment = consignment
         self.window = tk.Toplevel(master)
-        self.window.title(f"Consignment Detay - {consignment['consignment_ref']}")
+        self.window.title(f"Consignment Detail - {consignment['consignment_ref']}")
         self.window.geometry("700x500")
         self.window.transient(master)
         self.window.grab_set()
@@ -302,7 +302,7 @@ class ConsignmentDetailWindow:
         info = (
             f"Ref: {self.consignment['consignment_ref']}\n"
             f"Partner: {self.consignment['partner_name']}\n"
-            f"Durum: {self.consignment['status']}"
+            f"Status: {self.consignment['status']}"
         )
         ttk.Label(container, text=info, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 10))
 
@@ -310,11 +310,11 @@ class ConsignmentDetailWindow:
         self.tree = ttk.Treeview(container, columns=columns, show="headings", height=15)
         headers = {
             "rug_no": "Rug No",
-            "state": "Durum",
-            "scanned_at": "Tarih",
+            "state": "State",
+            "scanned_at": "Date",
             "collection": "Collection",
             "design": "Design",
-            "brand_name": "Marka",
+            "brand_name": "Brand",
         }
         for key, label in headers.items():
             self.tree.heading(key, text=label)
@@ -324,8 +324,8 @@ class ConsignmentDetailWindow:
         button_frame = ttk.Frame(container)
         button_frame.pack(fill=tk.X, pady=(10, 0))
 
-        ttk.Button(button_frame, text="CSV Dışa Aktar", command=self._export_csv).pack(side=tk.LEFT)
-        ttk.Button(button_frame, text="Kapat", command=self.window.destroy).pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Export CSV", command=self._export_csv).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Close", command=self.window.destroy).pack(side=tk.RIGHT)
 
         self._load_lines()
 
@@ -382,7 +382,7 @@ class ConsignmentDetailWindow:
                 )
         messagebox.showinfo(
             "CSV Export",
-            f"Dosya kaydedildi: {os.path.basename(filename)}",
+            f"File saved: {os.path.basename(filename)}",
             parent=self.window,
         )
 
@@ -393,7 +393,7 @@ class ConsignmentListWindow:
     def __init__(self, master: tk.Tk) -> None:
         self.master = master
         self.window = tk.Toplevel(master)
-        self.window.title("Consignment Listesi")
+        self.window.title("Consignment List")
         self.window.geometry("750x500")
         self.window.transient(master)
         self.window.grab_set()
@@ -418,10 +418,10 @@ class ConsignmentListWindow:
         headers = {
             "consignment_ref": "Ref",
             "partner_name": "Partner",
-            "created_at": "Tarih",
-            "status": "Durum",
-            "total_out": "Çıkan",
-            "total_returned": "Dönen",
+            "created_at": "Date",
+            "status": "Status",
+            "total_out": "Checked Out",
+            "total_returned": "Returned",
         }
         widths = {
             "consignment_ref": 120,
@@ -440,8 +440,8 @@ class ConsignmentListWindow:
         button_frame = ttk.Frame(container)
         button_frame.pack(fill=tk.X, pady=(10, 0))
 
-        ttk.Button(button_frame, text="CSV Dışa Aktar", command=self._export_csv).pack(side=tk.LEFT)
-        ttk.Button(button_frame, text="Kapat", command=self.window.destroy).pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Export CSV", command=self._export_csv).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Close", command=self.window.destroy).pack(side=tk.RIGHT)
 
     def _load_consignments(self) -> None:
         for row in self.tree.get_children():
@@ -500,7 +500,7 @@ class ConsignmentListWindow:
                 )
         messagebox.showinfo(
             "CSV Export",
-            f"Dosya kaydedildi: {os.path.basename(filename)}",
+            f"File saved: {os.path.basename(filename)}",
             parent=self.window,
         )
 
