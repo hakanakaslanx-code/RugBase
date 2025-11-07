@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-from typing import List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +23,35 @@ def _run_subprocess(command: Sequence[str]) -> Tuple[bool, str]:
     return result.returncode == 0, output
 
 
-def _pip_args(packages: Sequence[str], *extra: str) -> List[str]:
-    return [
+def _pip_args(
+    packages: Sequence[str],
+    *,
+    target: Optional[str] = None,
+    upgrade: bool = False,
+    extra: Iterable[str] = (),
+) -> List[str]:
+    command: List[str] = [
         sys.executable,
         "-m",
         "pip",
         "--disable-pip-version-check",
         "install",
-        *packages,
-        *extra,
     ]
+    if upgrade:
+        command.append("--upgrade")
+    if target:
+        command.extend(["--target", target])
+    command.extend(packages)
+    command.extend(extra)
+    return command
 
 
-def install_packages(packages: Sequence[str]) -> Tuple[bool, str]:
+def install_packages(
+    packages: Sequence[str],
+    *,
+    target: Optional[str] = None,
+    upgrade: bool = False,
+) -> Tuple[bool, str]:
     """Install ``packages`` using pip, attempting to bootstrap pip when necessary."""
 
     packages = [package for package in packages if package]
@@ -43,7 +59,7 @@ def install_packages(packages: Sequence[str]) -> Tuple[bool, str]:
         return True, ""
 
     logger.info("Attempting to install packages: %s", ", ".join(packages))
-    success, output = _run_subprocess(_pip_args(packages))
+    success, output = _run_subprocess(_pip_args(packages, target=target, upgrade=upgrade))
     if output:
         logger.info("pip install output:\n%s", output)
     if success:
@@ -61,7 +77,7 @@ def install_packages(packages: Sequence[str]) -> Tuple[bool, str]:
         if not ensure_success:
             details = ensure_output or output
             return False, f"pip could not be bootstrapped: {details}"
-        success, output = _run_subprocess(_pip_args(packages))
+        success, output = _run_subprocess(_pip_args(packages, target=target, upgrade=upgrade))
         if output:
             logger.info("pip install output after ensurepip:\n%s", output)
         if success:
@@ -70,9 +86,11 @@ def install_packages(packages: Sequence[str]) -> Tuple[bool, str]:
     permission_error = any(
         keyword in lowered for keyword in ("permission", "access is denied", "permission denied")
     )
-    if permission_error:
+    if permission_error and target is None:
         logger.warning("Permission error detected during installation; retrying with --user")
-        success, user_output = _run_subprocess(_pip_args(packages, "--user"))
+        success, user_output = _run_subprocess(
+            _pip_args(packages, upgrade=upgrade, extra=("--user",))
+        )
         if user_output:
             logger.info("pip install --user output:\n%s", user_output)
         if success:

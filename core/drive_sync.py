@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
 import db
-from core import dependencies, drive_api
+from core import app_paths, dependencies, drive_api
 from core.hash import file_sha256
 
 DB_FILENAME = "rugbase.db"
@@ -28,12 +28,26 @@ BACKUPS_FOLDER_NAME = "RugBase_Backups"
 SETTINGS_FILENAME = "drive_sync_settings.json"
 DEFAULT_POLL_INTERVAL = 30
 TOKEN_FILENAME = "token.json"
+CREDENTIALS_FILENAME = "credentials.json"
+
+STATUS_CONNECTED = "connected"
+STATUS_OFFLINE = "offline"
+STATUS_REAUTHORISE = "reauthorize"
+STATUS_CONFLICT = "conflict"
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 class SyncConfigurationError(RuntimeError):
     """Raised when Drive synchronisation has not been configured."""
+
+
+class SyncAuthenticationRequired(RuntimeError):
+    """Raised when OAuth credentials must be refreshed by the user."""
+
+
+class SyncOfflineError(RuntimeError):
+    """Raised when synchronisation cannot complete due to connectivity issues."""
 
 
 @dataclass
@@ -45,6 +59,9 @@ class SyncResult:
     new_conflicts: int = 0
     total_conflicts: int = 0
     last_sync: Optional[str] = None
+    status: str = STATUS_CONNECTED
+    requires_resolution: bool = False
+    backup_path: Optional[str] = None
 
 
 def _now() -> datetime:
@@ -67,22 +84,24 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _default_token_path() -> str:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        return os.path.join(local_app_data, "RugBase", TOKEN_FILENAME)
-    home = Path.home()
-    return str(home / ".rugbase" / TOKEN_FILENAME)
+    token_dir = app_paths.ensure_directory(app_paths.TOKENS_DIR)
+    return str(token_dir / TOKEN_FILENAME)
 
 
 def _resolve_token_path(token_path: Optional[str]) -> str:
-    default_path = _default_token_path()
-    candidate = token_path or default_path
-    expanded = os.path.expanduser(str(candidate))
-    normalised = os.path.normpath(expanded)
-    parts = [part.lower() for part in normalised.replace("\\", "/").split("/") if part]
-    if any(part == "desktop" for part in parts):
-        return default_path
-    return normalised
+    default_path = Path(_default_token_path())
+    if token_path:
+        expanded = Path(os.path.expanduser(str(token_path))).resolve()
+        parts = [part.lower() for part in expanded.parts]
+        if "desktop" not in parts:
+            try:
+                expanded.relative_to(app_paths.APP_DIR)
+            except ValueError:
+                logger.debug("Token path %s outside app directory; using default", expanded)
+            else:
+                default_path = expanded
+    default_path.parent.mkdir(parents=True, exist_ok=True)
+    return str(default_path)
 
 
 def _ensure_token_directory(token_path: str) -> str:
@@ -91,6 +110,31 @@ def _ensure_token_directory(token_path: str) -> str:
     if directory:
         os.makedirs(directory, exist_ok=True)
     return resolved_path
+
+
+def _credentials_storage_path() -> Path:
+    path = app_paths.data_path(CREDENTIALS_FILENAME)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _normalise_client_secret_path(candidate: Optional[str]) -> str:
+    destination = _credentials_storage_path()
+    if not candidate:
+        return str(destination) if destination.exists() else ""
+    source_path = Path(os.path.expanduser(str(candidate))).resolve()
+    if source_path == destination and destination.exists():
+        return str(destination)
+    if not source_path.exists():
+        raise FileNotFoundError(f"Client secret file not found: {source_path}")
+    try:
+        shutil.copy2(source_path, destination)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to copy client secret to {destination}: {exc}"
+        ) from exc
+    logger.info("Client secret copied to %s", destination)
+    return str(destination)
 
 
 _GOOGLE_DEPENDENCIES = (
@@ -102,6 +146,9 @@ _GOOGLE_AVAILABLE = False
 _GOOGLE_INSTALL_ATTEMPTED = False
 
 logger = logging.getLogger(__name__)
+
+app_paths.ensure_app_structure()
+app_paths.ensure_vendor_on_path()
 
 
 def _iter_site_directories() -> Iterable[str]:
@@ -182,6 +229,7 @@ def _ensure_google_dependencies_installed() -> None:
     if _GOOGLE_AVAILABLE:
         return
 
+    app_paths.ensure_vendor_on_path()
     _refresh_site_packages()
 
     if _google_import_available():
@@ -192,7 +240,12 @@ def _ensure_google_dependencies_installed() -> None:
     if not _GOOGLE_INSTALL_ATTEMPTED:
         _GOOGLE_INSTALL_ATTEMPTED = True
         logger.info("Attempting to install Google API client libraries")
-        success, output = dependencies.install_packages(_GOOGLE_DEPENDENCIES)
+        vendor_dir = str(app_paths.ensure_vendor_on_path())
+        success, output = dependencies.install_packages(
+            _GOOGLE_DEPENDENCIES,
+            target=vendor_dir,
+            upgrade=True,
+        )
         if not success:
             logger.error("Automatic installation of Google API client libraries failed: %s", output)
             raise RuntimeError(
@@ -200,7 +253,8 @@ def _ensure_google_dependencies_installed() -> None:
                 f"Details: {output}"
             )
         logger.info("Google API client libraries installed; refreshing module search paths")
-        _refresh_site_packages()
+        app_paths.ensure_vendor_on_path()
+        importlib.invalidate_caches()
         if _google_import_available():
             _GOOGLE_AVAILABLE = True
             logger.info("Google API client libraries available after installation")
@@ -220,7 +274,7 @@ def _ensure_google_dependencies_installed() -> None:
 
 
 def _settings_path() -> Path:
-    return Path(db.resource_path(SETTINGS_FILENAME))
+    return app_paths.data_path(SETTINGS_FILENAME)
 
 
 def _default_settings() -> Dict[str, object]:
@@ -259,12 +313,40 @@ def load_settings() -> Dict[str, object]:
         save_settings(defaults)
     else:
         defaults["token_path"] = resolved_token_path
+    secret_candidate = str(defaults.get("client_secret_path") or "")
+    if secret_candidate:
+        try:
+            normalised_secret = _normalise_client_secret_path(secret_candidate)
+        except FileNotFoundError:
+            logger.warning("Configured client secret missing at %s; clearing", secret_candidate)
+            normalised_secret = ""
+        except RuntimeError as exc:
+            logger.error("Failed to store client secret: %s", exc)
+            raise
+    else:
+        stored_secret = _credentials_storage_path()
+        normalised_secret = str(stored_secret) if stored_secret.exists() else ""
+    if defaults.get("client_secret_path") != normalised_secret:
+        defaults["client_secret_path"] = normalised_secret
+        save_settings(defaults)
+    else:
+        defaults["client_secret_path"] = normalised_secret
     defaults.setdefault("root_folder_id", ROOT_FOLDER_ID)
     return defaults
 
 
 def save_settings(settings: Dict[str, object]) -> None:
     path = _settings_path()
+    token_path = _ensure_token_directory(str(settings.get("token_path") or _default_token_path()))
+    settings["token_path"] = token_path
+    try:
+        secret_path = _normalise_client_secret_path(settings.get("client_secret_path"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(str(exc)) from exc
+    except RuntimeError:
+        raise
+    else:
+        settings["client_secret_path"] = secret_path
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(settings, handle, indent=2, ensure_ascii=False)
@@ -291,7 +373,14 @@ def _create_service(settings: Dict[str, object]):
     if settings.get("token_path") != token_path:
         settings["token_path"] = token_path
         save_settings(settings)
-    return drive_api.init_client(str(settings["client_secret_path"]), str(token_path), drive_api.DEFAULT_SCOPES)
+    try:
+        return drive_api.init_client(
+            str(settings["client_secret_path"]),
+            str(token_path),
+            drive_api.DEFAULT_SCOPES,
+        )
+    except drive_api.AuthenticationError as exc:
+        raise SyncAuthenticationRequired(str(exc)) from exc
 
 
 def _ensure_structure(service) -> Tuple[str, str, str]:
@@ -320,6 +409,8 @@ class DriveSync:
         self._lock = threading.Lock()
         self._service = None
         self._structure: Optional[Dict[str, str]] = None
+        self._conflict_pending = False
+        self._pending_conflict_backup: Optional[Path] = None
 
     def _reload_settings(self) -> Dict[str, object]:
         return load_settings()
@@ -446,6 +537,20 @@ class DriveSync:
             fields="id",
         ).execute()
 
+    def _backup_local_copy(self) -> Optional[Path]:
+        if not self.db_path.exists():
+            return None
+        backup_dir = app_paths.ensure_directory(app_paths.BACKUP_DIR)
+        timestamp = _now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"rugbase_{timestamp}.db"
+        try:
+            shutil.copy2(self.db_path, backup_path)
+        except OSError as exc:
+            logger.error("Failed to back up local database to %s: %s", backup_path, exc)
+            return None
+        logger.info("Local database backed up to %s", backup_path)
+        return backup_path
+
     def _log_conflict(self, settings: Dict[str, object], local_hash: Optional[str], remote_hash: Optional[str], local_mtime: Optional[datetime], remote_mtime: Optional[datetime]) -> None:
         payload = {
             "local_hash": local_hash,
@@ -459,6 +564,17 @@ class DriveSync:
     def sync_once(self) -> SyncResult:
         settings = self._reload_settings()
         _ensure_configured(settings)
+        if self._conflict_pending:
+            total_conflicts = db.count_conflicts(resolved=False)
+            return SyncResult(
+                action="conflict",
+                message="Conflict resolution pending.",
+                total_conflicts=total_conflicts,
+                last_sync=settings.get("last_sync_time"),
+                status=STATUS_CONFLICT,
+                requires_resolution=True,
+                backup_path=str(self._pending_conflict_backup) if self._pending_conflict_backup else None,
+            )
         service, structure = self._ensure_client(settings)
 
         previous_conflicts = db.count_conflicts(resolved=False)
@@ -519,17 +635,25 @@ class DriveSync:
             )
 
         if local_changed and remote_changed:
-            self._copy_to_backups(service, file_id, structure)
-            self._upload_local(service, file_id, structure, settings)
+            backup_path = self._backup_local_copy()
+            try:
+                self._copy_to_backups(service, file_id, structure)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("Failed to create remote conflict backup", exc_info=True)
             self._log_conflict(settings, local_hash, remote_hash, local_mtime, remote_mtime)
+            self._conflict_pending = True
+            self._pending_conflict_backup = backup_path
             total_conflicts = db.count_conflicts(resolved=False)
             new_conflicts = max(total_conflicts - previous_conflicts, 0)
             return SyncResult(
                 action="conflict",
-                message="Conflict detected. Local database uploaded and Drive copy backed up.",
+                message="Conflict detected. Choose which copy should be kept.",
                 new_conflicts=new_conflicts,
                 total_conflicts=total_conflicts,
                 last_sync=settings.get("last_sync_time"),
+                status=STATUS_CONFLICT,
+                requires_resolution=True,
+                backup_path=str(backup_path) if backup_path else None,
             )
 
         if remote_mtime and (not local_mtime or remote_mtime > local_mtime):
@@ -571,14 +695,90 @@ class DriveSync:
         save_settings(settings)
         return archive_name
 
+    def resolve_conflict(self, prefer_local: bool) -> SyncResult:
+        settings = self._reload_settings()
+        _ensure_configured(settings)
+        service, structure = self._ensure_client(settings)
+        metadata = self._fetch_remote_metadata(service)
+        if not metadata:
+            raise RuntimeError("No remote database found to resolve the conflict.")
+        file_id = metadata.get("id")
+        if not file_id:
+            raise RuntimeError("Remote database identifier is missing.")
+        if prefer_local:
+            self._upload_local(service, file_id, structure, settings)
+            action = "upload"
+            message = "Local database uploaded to Google Drive."
+        else:
+            self._download_remote(service, file_id, settings)
+            action = "download"
+            message = "Remote database restored locally."
+        self._conflict_pending = False
+        self._pending_conflict_backup = None
+        total_conflicts = db.count_conflicts(resolved=False)
+        return SyncResult(
+            action=action,
+            message=message,
+            total_conflicts=total_conflicts,
+            last_sync=settings.get("last_sync_time"),
+            status=STATUS_CONNECTED,
+        )
+
+    def restore_remote(self) -> SyncResult:
+        settings = self._reload_settings()
+        _ensure_configured(settings)
+        service, _ = self._ensure_client(settings)
+        metadata = self._fetch_remote_metadata(service)
+        if not metadata:
+            raise FileNotFoundError("No remote database is available to restore.")
+        file_id = metadata.get("id")
+        if not file_id:
+            raise RuntimeError("Remote database identifier is missing.")
+        self._download_remote(service, file_id, settings)
+        self._conflict_pending = False
+        self._pending_conflict_backup = None
+        total_conflicts = db.count_conflicts(resolved=False)
+        return SyncResult(
+            action="restore",
+            message="Remote database restored locally.",
+            total_conflicts=total_conflicts,
+            last_sync=settings.get("last_sync_time"),
+            status=STATUS_CONNECTED,
+        )
+
+    def reset_credentials(self) -> None:
+        settings = self._reload_settings()
+        token_path = settings.get("token_path")
+        if token_path and os.path.exists(str(token_path)):
+            try:
+                os.remove(str(token_path))
+            except OSError as exc:
+                raise RuntimeError(f"Unable to remove token file: {exc}") from exc
+        settings["last_local_hash"] = None
+        settings["last_remote_hash"] = None
+        settings["remote_file_id"] = None
+        settings["remote_modified_time"] = None
+        settings["last_sync_time"] = None
+        save_settings(settings)
+        with self._lock:
+            self._service = None
+        self._conflict_pending = False
+        self._pending_conflict_backup = None
+
 
 __all__ = [
     "DriveSync",
     "SyncResult",
     "SyncConfigurationError",
+    "SyncAuthenticationRequired",
+    "SyncOfflineError",
     "DEFAULT_POLL_INTERVAL",
     "load_settings",
     "save_settings",
     "test_connection",
     "get_poll_interval",
+    "STATUS_CONNECTED",
+    "STATUS_OFFLINE",
+    "STATUS_REAUTHORISE",
+    "STATUS_CONFLICT",
 ]

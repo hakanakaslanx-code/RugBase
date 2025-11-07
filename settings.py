@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import db
 
 
-DEFAULT_SETTINGS_PATH = db.resource_path("settings.json")
+DEFAULT_SETTINGS_PATH = db.data_path("settings.json")
 
 DEFAULT_CONFIG = {
     "dymo_label": {

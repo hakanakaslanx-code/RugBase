@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -24,12 +25,18 @@ except ImportError:  # pragma: no cover - handled at runtime
     InstalledAppFlow = None
 
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
 
 class GoogleClientUnavailable(RuntimeError):
     """Raised when Google client libraries are not available."""
+
+
+class AuthenticationError(RuntimeError):
+    """Raised when OAuth credentials are invalid or require user action."""
 
 
 def _ensure_google_client() -> None:
@@ -73,18 +80,34 @@ def init_client(
 
     credentials = None
     if token_path and os.path.exists(token_path):
-        credentials = Credentials.from_authorized_user_file(token_path, scopes)
+        try:
+            credentials = Credentials.from_authorized_user_file(token_path, scopes)
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read stored credentials: %s", exc)
+            credentials = None
 
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except Exception as exc:
+                logger.warning("Credential refresh failed: %s", exc)
+                if token_path and os.path.exists(token_path):
+                    try:
+                        os.remove(token_path)
+                    except OSError:
+                        logger.debug("Unable to remove stale token file %s", token_path, exc_info=True)
+                raise AuthenticationError("Stored Google Drive oturumu geçersiz. Yeniden yetkilendirme gerekli.") from exc
         else:
             flow = InstalledAppFlow.from_client_secrets_file(secret_path, scopes)
             credentials = flow.run_local_server(port=0)
         if token_path:
             os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
-            with open(token_path, "w", encoding="utf-8") as handle:
-                handle.write(credentials.to_json())
+            try:
+                with open(token_path, "w", encoding="utf-8") as handle:
+                    handle.write(credentials.to_json())
+            except OSError as exc:
+                logger.warning("Unable to persist OAuth token to %s: %s", token_path, exc)
 
     return build("drive", "v3", credentials=credentials)
 

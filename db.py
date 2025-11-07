@@ -9,11 +9,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from core import app_paths
+
 DB_FILENAME = "rugbase.db"
 
 
 def _get_base_directory() -> str:
-    """Return the base directory for storing runtime data files."""
+    """Return the base directory for packaged application resources."""
 
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -26,7 +28,13 @@ def resource_path(*parts: str) -> str:
     return os.path.join(_get_base_directory(), *parts)
 
 
-DB_PATH = resource_path(DB_FILENAME)
+def data_path(*parts: str) -> str:
+    """Resolve a path inside the mutable application data directory."""
+
+    return str(app_paths.data_path(*parts))
+
+
+DB_PATH = data_path(DB_FILENAME)
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
