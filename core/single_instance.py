@@ -58,6 +58,12 @@ class _InstanceLock:
             return
 
         try:
+            try:
+                file_handle.seek(0)
+            except OSError:
+                # If resetting the pointer fails we still try to release the lock.
+                pass
+
             self._unlock_file(file_handle)
         finally:
             try:
