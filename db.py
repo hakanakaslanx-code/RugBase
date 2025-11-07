@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sqlite3
@@ -24,6 +25,37 @@ def resource_path(*parts: str) -> str:
 
 
 DB_PATH = resource_path(DB_FILENAME)
+
+ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+
+PROCESSED_CHANGES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS processed_changes (
+    change_file TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+)
+"""
+
+
+CONFLICTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    change_file TEXT NOT NULL,
+    item_id TEXT,
+    reason TEXT NOT NULL,
+    payload TEXT,
+    created_at TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+
+PROCESSED_STOCK_TXN_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS processed_stock_txns (
+    txn_id TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+)
+"""
 
 
 MASTER_SHEET_COLUMNS: List[Tuple[str, str]] = [
@@ -181,6 +213,9 @@ def initialize_database() -> None:
         os.makedirs(db_directory, exist_ok=True)
     with get_connection() as conn:
         conn.execute(CREATE_ITEM_TABLE_SQL)
+        conn.execute(PROCESSED_CHANGES_TABLE_SQL)
+        conn.execute(CONFLICTS_TABLE_SQL)
+        conn.execute(PROCESSED_STOCK_TXN_TABLE_SQL)
         _ensure_columns(conn)
         cursor = conn.execute("SELECT COUNT(*) FROM item")
         count = cursor.fetchone()[0]
@@ -206,7 +241,7 @@ def fetch_items(
 ) -> List[Dict[str, Any]]:
     select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
     query = f"SELECT {', '.join(select_fields)} FROM item"
-    filters = []
+    filters = ["COALESCE(status, 'in_stock') != 'deleted'"]
     params: List[Any] = []
 
     if rug_no_filter:
@@ -243,7 +278,7 @@ def search_items_for_labels(
 ) -> List[Dict[str, Any]]:
     select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
     query = f"SELECT {', '.join(select_fields)} FROM item"
-    filters: List[str] = []
+    filters: List[str] = ["COALESCE(status, 'in_stock') != 'deleted'"]
     params: List[Any] = []
 
     def _add_filter(field: str, value: Optional[str]) -> None:
@@ -308,6 +343,8 @@ def update_item(item_data: Dict[str, Any]) -> None:
         )
         conn.commit()
 
+    _notify_item_upsert(item_data["item_id"])
+
 
 def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
     """Upsert an item and return a tuple of (item_id, created)."""
@@ -358,6 +395,7 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
                 params,
             )
             conn.commit()
+            _notify_item_upsert(item_id)
             return item_id, False
 
         new_item_id = item_data.get("item_id") or str(uuid.uuid4())
@@ -375,6 +413,7 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
             insert_values,
         )
         conn.commit()
+        _notify_item_upsert(new_item_id)
         return new_item_id, True
 
 
@@ -399,6 +438,8 @@ def insert_item(item_data: Dict[str, Any]) -> str:
         )
         conn.commit()
 
+    _notify_item_upsert(item_id)
+
     return item_id
 
 
@@ -406,14 +447,63 @@ def delete_item(item_id: str) -> None:
     """Remove an item from the database."""
 
     with get_connection() as conn:
-        conn.execute("DELETE FROM item WHERE item_id = ?", (item_id,))
+        conn.execute(
+            "UPDATE item SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE item_id = ?",
+            (item_id,),
+        )
         conn.commit()
+
+    _notify_item_deleted(item_id)
 
 
 def generate_item_id() -> str:
     """Generate a short unique identifier for a new item."""
 
     return f"ITEM-{uuid.uuid4().hex[:8].upper()}"
+
+
+def _notify_item_upsert(item_id: str) -> None:
+    try:
+        from core import sync as sync_core  # Local import to avoid circular dependency
+    except Exception:
+        return
+
+    error_types = []
+    sync_error = getattr(sync_core, "SyncConfigurationError", None)
+    if isinstance(sync_error, type):
+        error_types.append(sync_error)
+    google_error = getattr(getattr(sync_core, "drive_api", None), "GoogleClientUnavailable", None)
+    if isinstance(google_error, type):
+        error_types.append(google_error)
+    config_error = tuple(error_types) or (RuntimeError,)
+    try:
+        sync_core.handle_local_upsert(item_id)
+    except config_error:
+        return
+    except Exception as exc:
+        print(f"[sync] Failed to push upsert for {item_id}: {exc}")
+
+
+def _notify_item_deleted(item_id: str) -> None:
+    try:
+        from core import sync as sync_core  # Local import to avoid circular dependency
+    except Exception:
+        return
+
+    error_types = []
+    sync_error = getattr(sync_core, "SyncConfigurationError", None)
+    if isinstance(sync_error, type):
+        error_types.append(sync_error)
+    google_error = getattr(getattr(sync_core, "drive_api", None), "GoogleClientUnavailable", None)
+    if isinstance(google_error, type):
+        error_types.append(google_error)
+    config_error = tuple(error_types) or (RuntimeError,)
+    try:
+        sync_core.handle_local_delete(item_id)
+    except config_error:
+        return
+    except Exception as exc:
+        print(f"[sync] Failed to push delete for {item_id}: {exc}")
 
 
 def _parse_numeric(value: str) -> Optional[float]:
@@ -437,6 +527,110 @@ def parse_numeric(value: Optional[str]) -> Optional[float]:
     if value is None:
         return None
     return _parse_numeric(str(value))
+
+
+def has_processed_change(change_file: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT 1 FROM processed_changes WHERE change_file = ?",
+            (change_file,),
+        )
+        return cursor.fetchone() is not None
+
+
+def record_processed_change(change_file: str, applied_at: Optional[str] = None) -> None:
+    timestamp = applied_at or datetime.utcnow().strftime(ISO_FORMAT)
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO processed_changes (change_file, applied_at) VALUES (?, ?)",
+            (change_file, timestamp),
+        )
+        conn.commit()
+
+
+def has_processed_stock_txn(txn_id: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT 1 FROM processed_stock_txns WHERE txn_id = ?",
+            (txn_id,),
+        )
+        return cursor.fetchone() is not None
+
+
+def record_processed_stock_txn(txn_id: str, applied_at: Optional[str] = None) -> None:
+    timestamp = applied_at or datetime.utcnow().strftime(ISO_FORMAT)
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO processed_stock_txns (txn_id, applied_at) VALUES (?, ?)",
+            (txn_id, timestamp),
+        )
+        conn.commit()
+
+
+def log_conflict(
+    change_file: str,
+    item_id: Optional[str],
+    reason: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    payload_json = None
+    if payload is not None:
+        try:
+            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            payload_json = json.dumps({"repr": repr(payload)})
+
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO conflicts (change_file, item_id, reason, payload, created_at, resolved)
+            VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            (
+                change_file,
+                item_id,
+                reason,
+                payload_json,
+                datetime.utcnow().strftime(ISO_FORMAT),
+            ),
+        )
+        conn.commit()
+
+
+def fetch_conflicts(resolved: Optional[bool] = None) -> List[Dict[str, Any]]:
+    query = "SELECT * FROM conflicts"
+    params: List[object] = []
+    if resolved is not None:
+        query += " WHERE resolved = ?"
+        params.append(1 if resolved else 0)
+    query += " ORDER BY datetime(created_at) DESC"
+
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def count_conflicts(resolved: Optional[bool] = None) -> int:
+    query = "SELECT COUNT(*) FROM conflicts"
+    params: List[object] = []
+    if resolved is not None:
+        query += " WHERE resolved = ?"
+        params.append(1 if resolved else 0)
+
+    with get_connection() as conn:
+        cursor = conn.execute(query, params)
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
+def resolve_conflict(conflict_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE conflicts SET resolved = 1 WHERE id = ?",
+            (conflict_id,),
+        )
+        conn.commit()
 
 
 _DIMENSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
