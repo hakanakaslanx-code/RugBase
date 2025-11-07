@@ -19,57 +19,104 @@ class MainWindow:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
+        self.style = ttk.Style(self.root)
+        self._configure_style()
         self._create_widgets()
         self.load_items()
         self.root.bind("<Control-l>", self.on_open_label_generator)
 
+    def _configure_style(self) -> None:
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.style.configure("Header.TLabel", font=("Segoe UI", 18, "bold"))
+        self.style.configure("SubHeader.TLabel", font=("Segoe UI", 10), foreground="#555555")
+        self.style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
+        self.style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+
     def _create_widgets(self) -> None:
-        self.filter_frame = ttk.Frame(self.root, padding=10)
-        self.filter_frame.pack(fill=tk.X)
+        self.root.configure(padx=12, pady=12)
 
-        ttk.Label(self.filter_frame, text="Collection:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky=tk.W)
+        header_frame = ttk.Frame(self.root, padding=(10, 10))
+        header_frame.pack(fill=tk.X)
+        ttk.Label(header_frame, text="RugBase Inventory Dashboard", style="Header.TLabel").pack(
+            anchor=tk.W
+        )
+        ttk.Label(
+            header_frame,
+            text=f"Signed in as {self.current_user}",
+            style="SubHeader.TLabel",
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        self.filter_frame = ttk.LabelFrame(self.root, text="Filters", padding=12)
+        self.filter_frame.pack(fill=tk.X, pady=(5, 10))
+
         self.collection_var = tk.StringVar()
-        ttk.Entry(self.filter_frame, textvariable=self.collection_var, width=20).grid(row=0, column=1, pady=5, sticky=tk.W)
-
-        ttk.Label(self.filter_frame, text="Brand:").grid(row=0, column=2, padx=(15, 5), pady=5, sticky=tk.W)
         self.brand_var = tk.StringVar()
-        ttk.Entry(self.filter_frame, textvariable=self.brand_var, width=20).grid(row=0, column=3, pady=5, sticky=tk.W)
-
-        ttk.Label(self.filter_frame, text="Style:").grid(row=0, column=4, padx=(15, 5), pady=5, sticky=tk.W)
         self.style_var = tk.StringVar()
-        ttk.Entry(self.filter_frame, textvariable=self.style_var, width=20).grid(row=0, column=5, pady=5, sticky=tk.W)
 
-        self.search_button = ttk.Button(self.filter_frame, text="Search", command=self.on_search)
-        self.search_button.grid(row=0, column=6, padx=(15, 0), pady=5, sticky=tk.W)
+        fields = [
+            ("Collection", self.collection_var),
+            ("Brand", self.brand_var),
+            ("Style", self.style_var),
+        ]
+        for index, (label, variable) in enumerate(fields):
+            base_col = index * 2
+            ttk.Label(self.filter_frame, text=f"{label}:").grid(
+                row=0, column=base_col, padx=(0, 6), pady=4, sticky=tk.W
+            )
+            ttk.Entry(self.filter_frame, textvariable=variable, width=22).grid(
+                row=0, column=base_col + 1, padx=(0, 16), pady=4, sticky=tk.W
+            )
 
-        self.filter_frame.columnconfigure(7, weight=1)
+        spacer_col = len(fields) * 2
+        self.filter_frame.columnconfigure(spacer_col, weight=1)
+        self.search_button = ttk.Button(
+            self.filter_frame, text="Search", style="Accent.TButton", command=self.on_search
+        )
+        self.search_button.grid(row=0, column=spacer_col + 1, padx=(0, 8), pady=4, sticky=tk.E)
+        self.clear_button = ttk.Button(
+            self.filter_frame, text="Clear Filters", command=self.on_clear_filters
+        )
+        self.clear_button.grid(row=0, column=spacer_col + 2, padx=(0, 0), pady=4, sticky=tk.E)
 
-        self.export_frame = ttk.Frame(self.root, padding=(10, 0, 10, 5))
-        self.export_frame.pack(fill=tk.X)
+        self.export_frame = ttk.LabelFrame(self.root, text="Import & Export", padding=12)
+        self.export_frame.pack(fill=tk.X, pady=(0, 10))
 
-        self.import_csv_button = ttk.Button(self.export_frame, text="Import CSV", command=self.on_import_csv)
+        self.import_csv_button = ttk.Button(
+            self.export_frame, text="Import CSV", command=self.on_import_csv
+        )
         self.import_csv_button.pack(side=tk.LEFT)
 
-        self.import_xml_button = ttk.Button(self.export_frame, text="Import XML", command=self.on_import_xml)
+        self.import_xml_button = ttk.Button(
+            self.export_frame, text="Import XML", command=self.on_import_xml
+        )
         self.import_xml_button.pack(side=tk.LEFT, padx=(10, 0))
 
-        self.export_csv_button = ttk.Button(self.export_frame, text="Export CSV", command=self.on_export_csv)
+        self.export_csv_button = ttk.Button(
+            self.export_frame, text="Export CSV", command=self.on_export_csv
+        )
         self.export_csv_button.pack(side=tk.LEFT, padx=(10, 0))
 
-        self.export_xlsx_button = ttk.Button(self.export_frame, text="Export XLSX", command=self.on_export_xlsx)
+        self.export_xlsx_button = ttk.Button(
+            self.export_frame, text="Export XLSX", command=self.on_export_xlsx
+        )
         self.export_xlsx_button.pack(side=tk.LEFT, padx=(10, 0))
 
-        self.table_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
+        ttk.Separator(self.root).pack(fill=tk.X, pady=(0, 10))
+
+        self.table_frame = ttk.Frame(self.root)
         self.table_frame.pack(fill=tk.BOTH, expand=True)
 
         self.column_defs = list(db.MASTER_SHEET_COLUMNS)
         self.columns = [field for field, _ in self.column_defs]
 
-        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", height=15)
+        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", height=18)
         for field, header in self.column_defs:
             anchor = tk.E if field in db.NUMERIC_FIELDS else tk.W
             self.tree.heading(field, text=header)
-            self.tree.column(field, anchor=anchor, width=120, stretch=False)
+            self.tree.column(field, anchor=anchor, width=130, stretch=False)
 
         yscroll = ttk.Scrollbar(self.table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         xscroll = ttk.Scrollbar(self.table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -82,29 +129,33 @@ class MainWindow:
         self.table_frame.rowconfigure(0, weight=1)
         self.table_frame.columnconfigure(0, weight=1)
 
-        self.button_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
+        ttk.Separator(self.root).pack(fill=tk.X, pady=(10, 10))
+
+        self.button_frame = ttk.LabelFrame(self.root, text="Item Actions", padding=12)
         self.button_frame.pack(fill=tk.X)
 
-        self.add_button = ttk.Button(self.button_frame, text="Add Item", command=self.on_add_item)
+        self.add_button = ttk.Button(
+            self.button_frame, text="Add Item", style="Accent.TButton", command=self.on_add_item
+        )
         self.add_button.pack(side=tk.LEFT)
 
         self.label_button = ttk.Button(
             self.button_frame,
-            text="Etiket Oluştur (Dymo)",
+            text="Generate Label (DYMO)",
             command=self.open_label_generator,
         )
         self.label_button.pack(side=tk.LEFT, padx=(10, 0))
 
         self.consignment_button = ttk.Button(
             self.button_frame,
-            text="Consignment",
+            text="Consignment Out",
             command=self.open_consignment_modal,
         )
         self.consignment_button.pack(side=tk.LEFT, padx=(10, 0))
 
         self.return_button = ttk.Button(
             self.button_frame,
-            text="Return Items",
+            text="Consignment Returns",
             command=self.open_return_modal,
         )
         self.return_button.pack(side=tk.LEFT, padx=(10, 0))
@@ -116,28 +167,32 @@ class MainWindow:
 
         self.consignment_list_button = ttk.Button(
             self.button_frame,
-            text="Consignment List",
+            text="View Consignments",
             command=self.open_consignment_list,
         )
         self.consignment_list_button.pack(side=tk.LEFT, padx=(10, 0))
 
-        self.open_button = ttk.Button(self.button_frame, text="Open Item", command=self.on_open_item)
+        self.open_button = ttk.Button(
+            self.button_frame, text="Open Selected", command=self.on_open_item
+        )
         self.open_button.pack(side=tk.RIGHT)
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
         self.footer_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
-        self.footer_frame.pack(fill=tk.X)
+        self.footer_frame.pack(fill=tk.X, pady=(10, 0))
 
         self.totals_var = tk.StringVar(value="Total items: 0    Total area: 0.00")
         self.totals_label = ttk.Label(self.footer_frame, textvariable=self.totals_var)
         self.totals_label.pack(side=tk.LEFT)
 
-        self.update_button = ttk.Button(self.footer_frame, text="Check for Updates", command=self.on_check_for_updates)
+        self.update_button = ttk.Button(
+            self.footer_frame, text="Check for Updates", command=self.on_check_for_updates
+        )
         self.update_button.pack(side=tk.RIGHT)
 
         self.version_label = ttk.Label(self.footer_frame, text=f"Version {__version__}")
-        self.version_label.pack(side=tk.RIGHT, padx=(0, 10))
+        self.version_label.pack(side=tk.RIGHT, padx=(0, 12))
 
     def load_items(self) -> None:
         for row in self.tree.get_children():
@@ -156,6 +211,12 @@ class MainWindow:
         self._autosize_columns()
 
     def on_search(self) -> None:
+        self.load_items()
+
+    def on_clear_filters(self) -> None:
+        self.collection_var.set("")
+        self.brand_var.set("")
+        self.style_var.set("")
         self.load_items()
 
     def on_tree_double_click(self, event: tk.Event) -> None:

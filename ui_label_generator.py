@@ -10,9 +10,9 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency at runtime
     ImageTk = None  # type: ignore[assignment]
 
 import db
-from label_renderer import DymoLabelRenderer, PIL_AVAILABLE, PIL_IMPORT_MESSAGE
+from label_renderer import DymoLabelRenderer, PIL_AVAILABLE, PIL_IMPORT_MESSAGE, ensure_pillow
 
-MISSING_PILLOW_TEXT = "Etiket özellikleri Pillow kütüphanesi olmadan kullanılamaz."
+MISSING_PILLOW_TEXT = "Label features are unavailable without the Pillow library."
 
 
 class LabelGeneratorWindow:
@@ -20,17 +20,30 @@ class LabelGeneratorWindow:
         self.parent = parent
         self._on_close = on_close
         self.window = tk.Toplevel(parent)
-        self.window.title("Etiket Üretici")
-        self.window.geometry("940x600")
+        self.window.title("Label Generator")
+        self.window.geometry("960x620")
+        self.window.minsize(840, 540)
         self.window.transient(parent)
         self.window.grab_set()
         self.window.resizable(True, True)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.bind("<Escape>", lambda _: self.close())
 
+        pillow_ready = ensure_pillow()
         self.renderer = DymoLabelRenderer()
-        self._pillow_ready = PIL_AVAILABLE and self.renderer.pillow_available
-        self._preview_ready = ImageTk is not None and self._pillow_ready
+        self._pillow_ready = (pillow_ready or PIL_AVAILABLE) and self.renderer.pillow_available
+        global ImageTk
+        if self._pillow_ready and ImageTk is None:
+            try:
+                from PIL import ImageTk as _ImageTk  # type: ignore
+            except ModuleNotFoundError:  # pragma: no cover - optional dependency at runtime
+                ImageTk = None  # ensure consistent global state
+                self._preview_ready = False
+            else:
+                ImageTk = _ImageTk  # type: ignore[assignment]
+                self._preview_ready = True
+        else:
+            self._preview_ready = ImageTk is not None and self._pillow_ready
 
         self.rug_no_var = tk.StringVar()
         self.collection_var = tk.StringVar()
@@ -51,7 +64,7 @@ class LabelGeneratorWindow:
             self._handle_missing_pillow()
         elif not self._preview_ready:
             self.warning_var.set(
-                "Önizleme için Pillow'un ImageTk modülü gerekli. Önizleme devre dışı bırakıldı."
+                "Preview requires Pillow's ImageTk module. Preview rendering is disabled."
             )
 
     # region UI setup
@@ -69,7 +82,7 @@ class LabelGeneratorWindow:
         self._build_buttons(container)
 
     def _build_filters(self, container: ttk.Frame) -> None:
-        filter_frame = ttk.LabelFrame(container, text="Filtreler", padding=10)
+        filter_frame = ttk.LabelFrame(container, text="Filters", padding=10)
         filter_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
 
         entries = [
@@ -89,14 +102,14 @@ class LabelGeneratorWindow:
         self.origin_combo.grid(row=1, column=1, padx=(0, 8), pady=4, sticky=tk.W)
         self.origin_combo.configure(postcommand=self._load_origin_values)
 
-        search_button = ttk.Button(filter_frame, text="Ara", command=self.on_search)
+        search_button = ttk.Button(filter_frame, text="Search", command=self.on_search)
         last_column = len(entries) * 2
         filter_frame.columnconfigure(last_column, weight=1)
         search_button.grid(row=1, column=last_column, padx=(0, 8), pady=4, sticky=tk.E)
         self.window.bind("<Return>", lambda _: self.on_search())
 
     def _build_results(self, container: ttk.Frame) -> None:
-        results_frame = ttk.LabelFrame(container, text="Sonuçlar", padding=10)
+        results_frame = ttk.LabelFrame(container, text="Results", padding=10)
         results_frame.grid(row=1, column=0, sticky="nsew")
         container.rowconfigure(1, weight=1)
         container.columnconfigure(0, weight=1)
@@ -125,14 +138,19 @@ class LabelGeneratorWindow:
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
 
     def _build_preview(self, container: ttk.Frame) -> None:
-        preview_frame = ttk.LabelFrame(container, text="Önizleme", padding=10)
+        preview_frame = ttk.LabelFrame(container, text="Preview", padding=10)
         preview_frame.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
         container.columnconfigure(1, weight=1)
 
         self.preview_label = ttk.Label(preview_frame, anchor=tk.CENTER, justify=tk.CENTER)
         self.preview_label.pack(fill=tk.BOTH, expand=True)
 
-        self.warning_label = ttk.Label(preview_frame, textvariable=self.warning_var, foreground="#a94442", wraplength=360)
+        self.warning_label = ttk.Label(
+            preview_frame,
+            textvariable=self.warning_var,
+            foreground="#a94442",
+            wraplength=360,
+        )
         self.warning_label.pack(fill=tk.X, pady=(6, 0))
 
     def _build_buttons(self, container: ttk.Frame) -> None:
@@ -140,16 +158,26 @@ class LabelGeneratorWindow:
         button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         container.rowconfigure(2, weight=0)
 
-        self.save_button = ttk.Button(button_frame, text="PDF Kaydet", command=self.on_save_pdf, state=tk.DISABLED)
+        self.save_button = ttk.Button(button_frame, text="Save as PDF", command=self.on_save_pdf, state=tk.DISABLED)
         self.save_button.pack(side=tk.LEFT)
 
-        self.bulk_button = ttk.Button(button_frame, text="Toplu PDF", command=self.on_save_bulk_pdf, state=tk.DISABLED)
+        self.bulk_button = ttk.Button(
+            button_frame,
+            text="Batch PDF",
+            command=self.on_save_bulk_pdf,
+            state=tk.DISABLED,
+        )
         self.bulk_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        self.print_button = ttk.Button(button_frame, text="DYMO'ya Yazdır", command=self.on_print, state=tk.DISABLED)
+        self.print_button = ttk.Button(
+            button_frame,
+            text="Print to DYMO",
+            command=self.on_print,
+            state=tk.DISABLED,
+        )
         self.print_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        ttk.Button(button_frame, text="Kapat", command=self.close).pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Close", command=self.close).pack(side=tk.RIGHT)
 
     # endregion
 
@@ -224,9 +252,9 @@ class LabelGeneratorWindow:
     def _handle_missing_pillow(self) -> None:
         self.warning_var.set(PIL_IMPORT_MESSAGE)
         try:
-            messagebox.showerror("Etiket Üretici", PIL_IMPORT_MESSAGE, parent=self.window)
+            messagebox.showerror("Label Generator", PIL_IMPORT_MESSAGE, parent=self.window)
         except tk.TclError:
-            messagebox.showerror("Etiket Üretici", PIL_IMPORT_MESSAGE)
+            messagebox.showerror("Label Generator", PIL_IMPORT_MESSAGE)
         self.save_button.configure(state=tk.DISABLED)
         self.bulk_button.configure(state=tk.DISABLED)
         self.print_button.configure(state=tk.DISABLED)
@@ -243,7 +271,7 @@ class LabelGeneratorWindow:
         if not self._preview_ready:
             self.preview_label.configure(
                 image="",
-                text="Önizleme gösterilemiyor. Pillow ImageTk modülü bulunamadı.",
+                text="Preview unavailable. Pillow's ImageTk module could not be imported.",
             )
             return
         selected = self._get_selected_items()
@@ -254,10 +282,10 @@ class LabelGeneratorWindow:
         try:
             result = self.renderer.render_preview(item)
         except Exception as exc:
-            self.warning_var.set(f"Önizleme oluşturulamadı: {exc}")
+            self.warning_var.set(f"Preview could not be generated: {exc}")
             self._clear_preview()
             return
-        assert ImageTk is not None  # güvenli: _preview_ready kontrolünden geçildi
+        assert ImageTk is not None  # safe: _preview_ready ensures ImageTk is available
         self.preview_photo = ImageTk.PhotoImage(result.image)
         self.preview_label.configure(image=self.preview_photo)
         self._show_warnings(result.warnings)
@@ -270,7 +298,7 @@ class LabelGeneratorWindow:
     # region actions
     def on_save_pdf(self) -> None:
         if not self._pillow_ready:
-            messagebox.showerror("Kaydet", PIL_IMPORT_MESSAGE)
+            messagebox.showerror("Save Label", PIL_IMPORT_MESSAGE)
             return
         selected = self._get_selected_items()
         if len(selected) != 1:
@@ -278,7 +306,7 @@ class LabelGeneratorWindow:
         item = selected[0]
         file_path = filedialog.asksaveasfilename(
             parent=self.window,
-            title="Etiketi kaydet",
+            title="Save Label",
             defaultextension=".pdf",
             filetypes=[("PDF", "*.pdf"), ("PNG", "*.png")],
         )
@@ -290,20 +318,20 @@ class LabelGeneratorWindow:
             else:
                 warnings = self.renderer.export_pdf([item], file_path)
         except Exception as exc:
-            messagebox.showerror("Kaydet", f"Dosya kaydedilirken hata oluştu: {exc}")
+            messagebox.showerror("Save Label", f"An error occurred while saving: {exc}")
             return
-        self._show_result_message("Kaydet", "Etiket kaydedildi.", warnings)
+        self._show_result_message("Save Label", "The label was saved successfully.", warnings)
 
     def on_save_bulk_pdf(self) -> None:
         if not self._pillow_ready:
-            messagebox.showerror("Toplu PDF", PIL_IMPORT_MESSAGE)
+            messagebox.showerror("Batch PDF", PIL_IMPORT_MESSAGE)
             return
         selected = self._get_selected_items()
         if len(selected) <= 1:
             return
         file_path = filedialog.asksaveasfilename(
             parent=self.window,
-            title="Toplu PDF kaydet",
+            title="Save Batch PDF",
             defaultextension=".pdf",
             filetypes=[("PDF", "*.pdf")],
         )
@@ -312,13 +340,13 @@ class LabelGeneratorWindow:
         try:
             warnings = self.renderer.export_pdf(selected, file_path)
         except Exception as exc:
-            messagebox.showerror("Toplu PDF", f"PDF oluşturulamadı: {exc}")
+            messagebox.showerror("Batch PDF", f"The PDF could not be generated: {exc}")
             return
-        self._show_result_message("Toplu PDF", "PDF kaydedildi.", warnings)
+        self._show_result_message("Batch PDF", "The PDF was saved successfully.", warnings)
 
     def on_print(self) -> None:
         if not self._pillow_ready:
-            messagebox.showerror("Yazdır", PIL_IMPORT_MESSAGE)
+            messagebox.showerror("Print", PIL_IMPORT_MESSAGE)
             return
         selected = self._get_selected_items()
         if len(selected) != 1:
@@ -327,14 +355,14 @@ class LabelGeneratorWindow:
         try:
             warnings = self.renderer.print_to_default(item)
         except Exception as exc:
-            messagebox.showerror("Yazdır", f"Yazdırma başlatılamadı: {exc}")
+            messagebox.showerror("Print", f"Printing could not be started: {exc}")
             return
-        self._show_result_message("Yazdır", "Yazdırma işlemi başlatıldı.", warnings)
+        self._show_result_message("Print", "Printing has been started.", warnings)
 
     def _show_result_message(self, title: str, message: str, warnings: List[str]) -> None:
         self._show_warnings(warnings)
         if warnings:
-            messagebox.showwarning(title, f"{message}\n\nUyarılar:\n- " + "\n- ".join(warnings))
+            messagebox.showwarning(title, f"{message}\n\nWarnings:\n- " + "\n- ".join(warnings))
         else:
             messagebox.showinfo(title, message)
 

@@ -3,24 +3,82 @@ from __future__ import annotations
 import math
 import os
 import re
+import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-try:
-    from PIL import Image, ImageDraw, ImageFont  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - optional dependency at runtime
-    Image = None  # type: ignore[assignment]
-    ImageDraw = None  # type: ignore[assignment]
-    ImageFont = None  # type: ignore[assignment]
-    PIL_AVAILABLE = False
-    PIL_IMPORT_MESSAGE = (
-        "Pillow (PIL) kütüphanesi bulunamadı. Etiket oluşturma özelliklerini "
-        "kullanmak için lütfen 'pip install Pillow' komutuyla Pillow kurulumunu tamamlayın."
-    )
-else:  # pragma: no cover - exercised when Pillow is installed
-    PIL_AVAILABLE = True
-    PIL_IMPORT_MESSAGE = ""
+Image = None  # type: ignore[assignment]
+ImageDraw = None  # type: ignore[assignment]
+ImageFont = None  # type: ignore[assignment]
+PIL_IMPORT_MESSAGE = (
+    "Pillow (PIL) is required to generate labels. The application will try to install it "
+    "automatically, but manual installation via 'pip install Pillow' may be necessary."
+)
+
+
+def _import_pillow() -> bool:
+    """Attempt to import Pillow and cache the modules on success."""
+
+    global Image, ImageDraw, ImageFont
+    try:
+        from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageFont as _ImageFont  # type: ignore
+    except ModuleNotFoundError:
+        return False
+    else:  # pragma: no cover - exercised when Pillow is installed
+        Image = _Image
+        ImageDraw = _ImageDraw
+        ImageFont = _ImageFont
+        return True
+
+
+PIL_AVAILABLE = _import_pillow()
+_PIL_INSTALL_ATTEMPTED = False
+
+
+def _install_dependency(package: str) -> tuple[bool, str]:
+    """Install the given package using pip, returning a success flag and message."""
+
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", package],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception as exc:  # pragma: no cover - external dependency installation
+        return False, str(exc)
+    return True, ""
+
+
+def ensure_pillow() -> bool:
+    """Ensure Pillow is installed and imported, attempting automatic installation."""
+
+    global PIL_AVAILABLE, PIL_IMPORT_MESSAGE, _PIL_INSTALL_ATTEMPTED
+    if PIL_AVAILABLE:
+        return True
+
+    if not _PIL_INSTALL_ATTEMPTED:
+        _PIL_INSTALL_ATTEMPTED = True
+        success, message = _install_dependency("Pillow")
+        if not success:
+            PIL_IMPORT_MESSAGE = (
+                "Pillow (PIL) is required to generate labels and could not be installed automatically. "
+                f"Please install it manually. Details: {message}"
+            )
+            return False
+        if _import_pillow():
+            PIL_AVAILABLE = True
+            PIL_IMPORT_MESSAGE = ""
+            return True
+        PIL_IMPORT_MESSAGE = (
+            "Pillow (PIL) was installed but could not be imported. Please restart the application "
+            "or install Pillow manually."
+        )
+        return False
+
+    # Installation already attempted but failed; message is populated.
+    return False
 
 import db
 from settings import DymoLabelSettings, FontSpec, load_settings
@@ -92,7 +150,7 @@ class Barcode39:
         for index, char in enumerate(data):
             pattern = self._PATTERNS.get(char)
             if not pattern:
-                raise ValueError(f"Code39 karakteri desteklenmiyor: {char}")
+                raise ValueError(f"Unsupported Code39 character: {char}")
             for pos, symbol in enumerate(pattern):
                 width = self.wide_bar_px if symbol == "w" else self.narrow_bar_px
                 encoded_widths.append(width if pos % 2 == 0 else -width)
@@ -121,6 +179,7 @@ class Barcode39:
 
 class DymoLabelRenderer:
     def __init__(self) -> None:
+        ensure_pillow()
         self.settings: DymoLabelSettings = load_settings()
         self._font_cache: Dict[Tuple[str, int], Any] = {}
         self._pdf_dimensions: Optional[Tuple[float, float]] = None
@@ -152,7 +211,7 @@ class DymoLabelRenderer:
         except OSError:
             font = ImageFont.load_default()
             warning = (
-                f"TrueType yazı tipi '{spec.name}' bulunamadı. Varsayılan PIL yazı tipi kullanılıyor."
+                f"TrueType font '{spec.name}' could not be found. Using the default Pillow font."
             )
             self._font_cache[key] = font
             return font, warning
@@ -279,7 +338,7 @@ class DymoLabelRenderer:
 
         rug_no = (item.get("rug_no") or "").strip().upper()
         if not rug_no:
-            warnings.append("Rug # alanı boş. Barkod oluşturulamadı.")
+            warnings.append("Rug # is empty. Barcode generation was skipped.")
         else:
             encoded = f"*{rug_no}*"
             widths = barcode.encode(encoded)
@@ -407,7 +466,7 @@ class DymoLabelRenderer:
             pages.append(result.image)
             warnings.extend(result.warnings)
         if not pages:
-            raise ValueError("PDF'e aktarılacak etiket bulunamadı.")
+            raise ValueError("No labels were available to export to PDF.")
         first, *rest = pages
         first.save(path, "PDF", resolution=self.settings.dpi, save_all=bool(rest), append_images=rest)
         return warnings
@@ -425,7 +484,7 @@ class DymoLabelRenderer:
         result = self.render(item)
         warnings = list(result.warnings)
         if os.name != "nt":
-            warnings.append("Doğrudan yazdırma sadece Windows üzerinde desteklenir.")
+            warnings.append("Direct printing is only supported on Windows.")
             return warnings
         temp_dir = tempfile.gettempdir()
         temp_path = os.path.join(temp_dir, "dymo_label.png")
@@ -433,8 +492,14 @@ class DymoLabelRenderer:
         try:
             os.startfile(temp_path, "print")  # type: ignore[attr-defined]
         except OSError as exc:
-            warnings.append(f"Yazdırma başlatılamadı: {exc}")
+            warnings.append(f"Failed to start printing: {exc}")
         return warnings
 
 
-__all__ = ["DymoLabelRenderer", "RenderResult", "PIL_AVAILABLE", "PIL_IMPORT_MESSAGE"]
+__all__ = [
+    "DymoLabelRenderer",
+    "RenderResult",
+    "PIL_AVAILABLE",
+    "PIL_IMPORT_MESSAGE",
+    "ensure_pillow",
+]
