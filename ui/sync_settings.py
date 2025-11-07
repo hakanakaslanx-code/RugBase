@@ -186,7 +186,7 @@ class SyncSettingsWindow:
         self.root_folder_id_var.set(structure.get("root", ""))
         self.changelog_var.set(structure.get("changelog", ""))
         self.backups_var.set(structure.get("backups", ""))
-        self.status_var.set("Drive connection successful.")
+        self.status_var.set("Connection OK")
 
     def _on_save(self) -> None:
         data = self._collect_form_data()
