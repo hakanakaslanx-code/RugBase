@@ -5,6 +5,8 @@ import json
 import os
 import platform
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -69,6 +71,46 @@ def _default_token_path() -> str:
     return str(home / ".rugbase" / TOKEN_FILENAME)
 
 
+def _resolve_token_path(token_path: Optional[str]) -> str:
+    default_path = _default_token_path()
+    candidate = token_path or default_path
+    expanded = os.path.expanduser(str(candidate))
+    normalised = os.path.normpath(expanded)
+    parts = [part.lower() for part in normalised.replace("\\", "/").split("/") if part]
+    if any(part == "desktop" for part in parts):
+        return default_path
+    return normalised
+
+
+def _ensure_token_directory(token_path: str) -> str:
+    resolved_path = _resolve_token_path(token_path)
+    directory = os.path.dirname(resolved_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    return resolved_path
+
+
+def _ensure_google_dependencies_installed() -> None:
+    try:
+        import googleapiclient  # type: ignore  # noqa: F401
+    except ImportError:
+        result = subprocess.call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "google-api-python-client",
+                "google-auth-oauthlib",
+                "google-auth",
+            ]
+        )
+        if result != 0:
+            raise RuntimeError("Failed to install Google API client dependencies.")
+        import googleapiclient  # type: ignore  # noqa: F401
+
+
 def _settings_path() -> Path:
     return Path(db.resource_path(SETTINGS_FILENAME))
 
@@ -102,6 +144,13 @@ def load_settings() -> Dict[str, object]:
         save_settings(defaults)
     if not defaults.get("token_path"):
         defaults["token_path"] = _default_token_path()
+    original_token_path = str(defaults.get("token_path"))
+    resolved_token_path = _ensure_token_directory(original_token_path)
+    if resolved_token_path != original_token_path:
+        defaults["token_path"] = resolved_token_path
+        save_settings(defaults)
+    else:
+        defaults["token_path"] = resolved_token_path
     defaults.setdefault("root_folder_id", ROOT_FOLDER_ID)
     return defaults
 
@@ -129,7 +178,11 @@ def _ensure_configured(settings: Dict[str, object]) -> None:
 
 
 def _create_service(settings: Dict[str, object]):
-    token_path = settings.get("token_path") or _default_token_path()
+    _ensure_google_dependencies_installed()
+    token_path = _ensure_token_directory(str(settings.get("token_path") or _default_token_path()))
+    if settings.get("token_path") != token_path:
+        settings["token_path"] = token_path
+        save_settings(settings)
     return drive_api.init_client(str(settings["client_secret_path"]), str(token_path), drive_api.DEFAULT_SCOPES)
 
 
@@ -144,6 +197,7 @@ def _ensure_structure(service) -> Tuple[str, str, str]:
 def test_connection(candidate_settings: Dict[str, object]) -> Dict[str, str]:
     settings = load_settings()
     settings.update(candidate_settings)
+    _ensure_google_dependencies_installed()
     _ensure_configured(settings)
     service = _create_service(settings)
     root_id, changelog_id, backups_id = _ensure_structure(service)

@@ -33,11 +33,29 @@ class GoogleClientUnavailable(RuntimeError):
 
 
 def _ensure_google_client() -> None:
+    global build, HttpError, MediaFileUpload, MediaIoBaseUpload, Request, Credentials, InstalledAppFlow
+
     if build is None or Credentials is None or InstalledAppFlow is None:
-        raise GoogleClientUnavailable(
-            "Google API client libraries are required. Install 'google-api-python-client' "
-            "and 'google-auth-oauthlib'."
-        )
+        try:
+            from googleapiclient.discovery import build as build_factory
+            from googleapiclient.errors import HttpError as http_error_cls
+            from googleapiclient.http import MediaFileUpload as media_file_upload_cls, MediaIoBaseUpload as media_io_upload_cls
+            from google.auth.transport.requests import Request as request_cls
+            from google.oauth2.credentials import Credentials as credentials_cls
+            from google_auth_oauthlib.flow import InstalledAppFlow as installed_app_flow_cls
+        except ImportError as exc:
+            raise GoogleClientUnavailable(
+                "Google API client libraries are required. Install 'google-api-python-client' "
+                "and 'google-auth-oauthlib'."
+            ) from exc
+
+        build = build_factory
+        HttpError = http_error_cls
+        MediaFileUpload = media_file_upload_cls
+        MediaIoBaseUpload = media_io_upload_cls
+        Request = request_cls
+        Credentials = credentials_cls
+        InstalledAppFlow = installed_app_flow_cls
 
 
 def init_client(
