@@ -2,19 +2,20 @@
 from __future__ import annotations
 
 import os
+import platform
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Dict, Optional
 
 import db
-from core import sync
+from core import drive_sync
 
 
 class SyncSettingsWindow:
     def __init__(self, parent: tk.Misc, on_saved: Optional[Callable[[], None]] = None) -> None:
         self.parent = parent
         self.on_saved = on_saved
-        self.settings = sync.load_settings()
+        self.settings = drive_sync.load_settings()
 
         self.window = tk.Toplevel(parent)
         self.window.title("Sync Settings")
@@ -46,13 +47,14 @@ class SyncSettingsWindow:
         self.token_path_var = tk.StringVar()
         token_entry = ttk.Entry(creds_frame, textvariable=self.token_path_var, width=50, state="readonly")
         token_entry.grid(row=3, column=0, sticky="ew", pady=(2, 6))
-        ttk.Label(creds_frame, text="Root Folder ID (optional):").grid(row=4, column=0, sticky="w")
+        ttk.Label(creds_frame, text="Root Folder ID:").grid(row=4, column=0, sticky="w")
         self.root_folder_id_var = tk.StringVar()
-        ttk.Entry(creds_frame, textvariable=self.root_folder_id_var, width=50).grid(row=5, column=0, sticky="ew", pady=(2, 6))
-
-        ttk.Label(creds_frame, text="Root Folder Name:").grid(row=6, column=0, sticky="w")
-        self.root_folder_name_var = tk.StringVar()
-        ttk.Entry(creds_frame, textvariable=self.root_folder_name_var, width=50).grid(row=7, column=0, sticky="ew", pady=(2, 0))
+        ttk.Entry(
+            creds_frame,
+            textvariable=self.root_folder_id_var,
+            width=50,
+            state="readonly",
+        ).grid(row=5, column=0, sticky="ew", pady=(2, 0))
 
         creds_frame.columnconfigure(0, weight=1)
 
@@ -136,11 +138,13 @@ class SyncSettingsWindow:
 
     def _populate_fields(self) -> None:
         self.client_secret_var.set(self.settings.get("client_secret_path", ""))
-        self.token_path_var.set(self.settings.get("token_path", ""))
-        self.root_folder_id_var.set(self.settings.get("root_folder_id", ""))
-        self.root_folder_name_var.set(self.settings.get("root_folder_name", sync.DEFAULT_ROOT_NAME))
-        self.poll_interval_var.set(str(self.settings.get("poll_interval", sync.DEFAULT_POLL_INTERVAL)))
-        self.node_name_var.set(self.settings.get("node_name", ""))
+        token_path = self.settings.get("token_path") or drive_sync.load_settings().get("token_path", "")
+        self.token_path_var.set(token_path)
+        self.root_folder_id_var.set(self.settings.get("root_folder_id", drive_sync.ROOT_FOLDER_ID))
+        poll_default = self.settings.get("poll_interval", drive_sync.DEFAULT_POLL_INTERVAL)
+        self.poll_interval_var.set(str(poll_default))
+        node_default = self.settings.get("node_name") or platform.node() or "RugBaseNode"
+        self.node_name_var.set(node_default)
         last_sync = self.settings.get("last_sync_time")
         self.last_sync_var.set(last_sync or "Never")
         self.changelog_var.set(self.settings.get("changelog_folder_id", ""))
@@ -150,12 +154,11 @@ class SyncSettingsWindow:
         data: Dict[str, Any] = {
             "client_secret_path": self.client_secret_var.get().strip(),
             "token_path": self.token_path_var.get().strip() or self.settings.get("token_path"),
-            "root_folder_id": self.root_folder_id_var.get().strip(),
-            "root_folder_name": self.root_folder_name_var.get().strip() or sync.DEFAULT_ROOT_NAME,
             "poll_interval": self.poll_interval_var.get().strip(),
             "node_name": self.node_name_var.get().strip() or self.settings.get("node_name", ""),
-            "changelog_folder_id": self.changelog_var.get().strip(),
-            "backups_folder_id": self.backups_var.get().strip(),
+            "root_folder_id": self.root_folder_id_var.get().strip() or drive_sync.ROOT_FOLDER_ID,
+            "changelog_folder_id": self.changelog_var.get().strip() or self.settings.get("changelog_folder_id"),
+            "backups_folder_id": self.backups_var.get().strip() or self.settings.get("backups_folder_id"),
         }
         return data
 
@@ -172,8 +175,8 @@ class SyncSettingsWindow:
     def _on_test_connection(self) -> None:
         data = self._collect_form_data()
         try:
-            structure = sync.test_connection(data)
-        except sync.SyncConfigurationError as exc:
+            structure = drive_sync.test_connection(data)
+        except drive_sync.SyncConfigurationError as exc:
             messagebox.showerror("Sync Settings", str(exc), parent=self.window)
             return
         except Exception as exc:
@@ -188,7 +191,7 @@ class SyncSettingsWindow:
     def _on_save(self) -> None:
         data = self._collect_form_data()
         try:
-            interval = int(data.get("poll_interval") or sync.DEFAULT_POLL_INTERVAL)
+            interval = int(data.get("poll_interval") or drive_sync.DEFAULT_POLL_INTERVAL)
         except ValueError:
             messagebox.showerror("Sync Settings", "Polling interval must be a number.", parent=self.window)
             return
@@ -201,7 +204,7 @@ class SyncSettingsWindow:
 
         updated = dict(self.settings)
         updated.update(data)
-        sync.save_settings(updated)
+        drive_sync.save_settings(updated)
         self.settings = updated
         self.status_var.set("Settings saved.")
 
