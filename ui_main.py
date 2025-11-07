@@ -12,6 +12,8 @@ from ui_item_card import ItemCardWindow
 from ui_label_generator import LabelGeneratorWindow
 from core.excel import Workbook
 from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
+from ui.sync_settings import SyncSettingsWindow
+from ui.sync_worker import SyncWorker
 
 
 class MainWindow:
@@ -20,10 +22,15 @@ class MainWindow:
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
         self.style = ttk.Style(self.root)
+        self.sync_status_var = tk.StringVar(value="Sync idle")
+        self.sync_worker = SyncWorker(self.root, self._on_sync_status)
         self._configure_style()
         self._create_widgets()
         self.load_items()
         self.root.bind("<Control-l>", self.on_open_label_generator)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.sync_worker.start()
+        self.sync_worker.sync_now()
 
     def _configure_style(self) -> None:
         try:
@@ -36,6 +43,7 @@ class MainWindow:
         self.style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
 
     def _create_widgets(self) -> None:
+        self._build_menu()
         self.root.configure(padx=12, pady=12)
 
         header_frame = ttk.Frame(self.root, padding=(10, 10))
@@ -188,6 +196,9 @@ class MainWindow:
         self.totals_label = ttk.Label(self.footer_frame, textvariable=self.totals_var)
         self.totals_label.pack(side=tk.LEFT)
 
+        self.sync_status_label = ttk.Label(self.footer_frame, textvariable=self.sync_status_var)
+        self.sync_status_label.pack(side=tk.LEFT, padx=(20, 0))
+
         self.update_button = ttk.Button(
             self.footer_frame, text="Check for Updates", command=self.on_check_for_updates
         )
@@ -265,6 +276,21 @@ class MainWindow:
             return
 
         ItemCardWindow(self.root, item_id, on_save=self.load_items)
+
+    def open_sync_settings(self) -> None:
+        def _after_save() -> None:
+            self.sync_status_var.set("Sync settings saved. Running sync…")
+            self.sync_worker.sync_now()
+
+        SyncSettingsWindow(self.root, on_saved=_after_save)
+
+    def on_sync_now(self) -> None:
+        self.sync_status_var.set("Sync in progress…")
+        self.sync_worker.sync_now()
+
+    def on_backup_now(self) -> None:
+        self.sync_status_var.set("Creating backup…")
+        self.sync_worker.backup_now()
 
     def on_delete_item(self) -> None:
         item_id = self.get_selected_item_id()
@@ -422,3 +448,26 @@ class MainWindow:
             return
 
         self._handle_import_result(result, "Import XML")
+
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self.root)
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Sync Settings…", command=self.open_sync_settings)
+        tools_menu.add_command(label="Sync Now", command=self.on_sync_now)
+        tools_menu.add_command(label="Backup Now", command=self.on_backup_now)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+        self.root.config(menu=menubar)
+
+    def _on_sync_status(self, message: str, result: Optional[object]) -> None:
+        self.sync_status_var.set(message)
+        new_conflicts = getattr(result, "new_conflicts", 0) if result else 0
+        if new_conflicts:
+            messagebox.showwarning(
+                "Sync Conflicts",
+                f"{new_conflicts} new conflict(s) detected. Review them in Sync Settings.",
+                parent=self.root,
+            )
+
+    def _on_close(self) -> None:
+        self.sync_worker.stop()
+        self.root.destroy()
