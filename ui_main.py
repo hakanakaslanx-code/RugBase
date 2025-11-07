@@ -7,6 +7,7 @@ from typing import Optional
 
 import db
 from core import importer, updater
+from core.logging_config import get_log_path
 from core.version import __version__
 from ui_item_card import ItemCardWindow
 from ui_label_generator import LabelGeneratorWindow
@@ -455,6 +456,8 @@ class MainWindow:
         tools_menu.add_command(label="Sync Settings…", command=self.open_sync_settings)
         tools_menu.add_command(label="Sync Now", command=self.on_sync_now)
         tools_menu.add_command(label="Backup Now", command=self.on_backup_now)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Open Debug Log", command=self.open_debug_log)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         self.root.config(menu=menubar)
 
@@ -467,6 +470,46 @@ class MainWindow:
                 f"{new_conflicts} new conflict(s) detected. Review them in Sync Settings.",
                 parent=self.root,
             )
+
+    def open_debug_log(self) -> None:
+        log_path = get_log_path()
+        if not log_path.exists():
+            messagebox.showinfo("Debug Log", "No debug log is available yet.", parent=self.root)
+            return
+
+        try:
+            content = log_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Debug Log", f"Unable to read log file: {exc}", parent=self.root)
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("RugBase Debug Log")
+        window.geometry("720x480")
+        window.transient(self.root)
+
+        text_widget = tk.Text(window, wrap="none")
+        text_widget.insert("1.0", content or "(Log file is empty)")
+        try:
+            fixed_font = tkfont.nametofont("TkFixedFont")
+        except tk.TclError:
+            fixed_font = ("Consolas", 10)
+        text_widget.configure(state="disabled", font=fixed_font)
+
+        yscroll = ttk.Scrollbar(window, orient="vertical", command=text_widget.yview)
+        xscroll = ttk.Scrollbar(window, orient="horizontal", command=text_widget.xview)
+        text_widget.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+        text_widget.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        window.rowconfigure(0, weight=1)
+        window.columnconfigure(0, weight=1)
+
+        ttk.Label(window, text=str(log_path), foreground="#555555").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 10)
+        )
 
     def _on_close(self) -> None:
         self.sync_worker.stop()

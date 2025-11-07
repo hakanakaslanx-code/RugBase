@@ -1,16 +1,21 @@
 """Google Drive synchronisation for the RugBase SQLite database."""
 from __future__ import annotations
 
+import importlib
 import json
+import logging
 import os
 import platform
 import shutil
+import site
+import sys
+import sysconfig
 import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 import db
 from core import dependencies, drive_api
@@ -96,6 +101,54 @@ _GOOGLE_DEPENDENCIES = (
 _GOOGLE_AVAILABLE = False
 _GOOGLE_INSTALL_ATTEMPTED = False
 
+logger = logging.getLogger(__name__)
+
+
+def _iter_site_directories() -> Iterable[str]:
+    seen: set[str] = set()
+
+    def _yield(candidate: object) -> Iterable[str]:
+        if isinstance(candidate, str):
+            values = [candidate]
+        elif isinstance(candidate, (list, tuple)):
+            values = [value for value in candidate if isinstance(value, str)]
+        else:
+            return []
+        for value in values:
+            normalised = os.path.normpath(value)
+            if normalised and normalised not in seen:
+                seen.add(normalised)
+                yield normalised
+
+    try:
+        yield from _yield(site.getusersitepackages())
+    except (AttributeError, OSError):
+        pass
+    try:
+        yield from _yield(site.getsitepackages())
+    except (AttributeError, OSError):
+        pass
+    for key in ("purelib", "platlib"):
+        try:
+            yield from _yield(sysconfig.get_path(key))
+        except (AttributeError, ValueError):
+            continue
+    pythonpath = os.environ.get("PYTHONPATH", "")
+    if pythonpath:
+        for entry in pythonpath.split(os.pathsep):
+            yield from _yield(entry)
+
+
+def _refresh_site_packages() -> None:
+    added: list[str] = []
+    for path in _iter_site_directories():
+        if os.path.isdir(path) and path not in sys.path:
+            sys.path.append(path)
+            added.append(path)
+    if added:
+        logger.debug("Added site-packages directories to sys.path: %s", added)
+    importlib.invalidate_caches()
+
 
 def _google_import_available() -> bool:
     try:  # pragma: no cover - environment dependent
@@ -113,29 +166,40 @@ def _ensure_google_dependencies_installed() -> None:
     if _GOOGLE_AVAILABLE:
         return
 
+    _refresh_site_packages()
+
     if _google_import_available():
         _GOOGLE_AVAILABLE = True
+        logger.debug("Google API client libraries already available")
         return
 
     if not _GOOGLE_INSTALL_ATTEMPTED:
         _GOOGLE_INSTALL_ATTEMPTED = True
+        logger.info("Attempting to install Google API client libraries")
         success, output = dependencies.install_packages(_GOOGLE_DEPENDENCIES)
         if not success:
+            logger.error("Automatic installation of Google API client libraries failed: %s", output)
             raise RuntimeError(
                 "Failed to install Google API client dependencies automatically. "
                 f"Details: {output}"
             )
+        logger.info("Google API client libraries installed; refreshing module search paths")
+        _refresh_site_packages()
         if _google_import_available():
             _GOOGLE_AVAILABLE = True
+            logger.info("Google API client libraries available after installation")
             return
         raise RuntimeError(
             "Google API client libraries were installed but could not be imported. "
-            "Please restart the application or install them manually."
+            "Please restart the application or install them manually. "
+            "See Tools → Open Debug Log for installation details."
         )
 
+    logger.warning("Google API client libraries still unavailable after previous installation attempt")
     raise RuntimeError(
         "Google API client libraries are required but could not be loaded automatically. "
-        "Please install 'google-api-python-client' and 'google-auth-oauthlib'."
+        "Please install 'google-api-python-client' and 'google-auth-oauthlib'. "
+        "See Tools → Open Debug Log for details."
     )
 
 
