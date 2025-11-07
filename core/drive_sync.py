@@ -5,8 +5,6 @@ import json
 import os
 import platform
 import shutil
-import subprocess
-import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -15,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import db
-from core import drive_api
+from core import dependencies, drive_api
 from core.hash import file_sha256
 
 DB_FILENAME = "rugbase.db"
@@ -90,25 +88,55 @@ def _ensure_token_directory(token_path: str) -> str:
     return resolved_path
 
 
-def _ensure_google_dependencies_installed() -> None:
-    try:
+_GOOGLE_DEPENDENCIES = (
+    "google-api-python-client",
+    "google-auth-oauthlib",
+    "google-auth",
+)
+_GOOGLE_AVAILABLE = False
+_GOOGLE_INSTALL_ATTEMPTED = False
+
+
+def _google_import_available() -> bool:
+    try:  # pragma: no cover - environment dependent
         import googleapiclient  # type: ignore  # noqa: F401
+        import google_auth_oauthlib  # type: ignore  # noqa: F401
+        import google.auth  # type: ignore  # noqa: F401
     except ImportError:
-        result = subprocess.call(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                "google-api-python-client",
-                "google-auth-oauthlib",
-                "google-auth",
-            ]
+        return False
+    return True
+
+
+def _ensure_google_dependencies_installed() -> None:
+    global _GOOGLE_AVAILABLE, _GOOGLE_INSTALL_ATTEMPTED
+
+    if _GOOGLE_AVAILABLE:
+        return
+
+    if _google_import_available():
+        _GOOGLE_AVAILABLE = True
+        return
+
+    if not _GOOGLE_INSTALL_ATTEMPTED:
+        _GOOGLE_INSTALL_ATTEMPTED = True
+        success, output = dependencies.install_packages(_GOOGLE_DEPENDENCIES)
+        if not success:
+            raise RuntimeError(
+                "Failed to install Google API client dependencies automatically. "
+                f"Details: {output}"
+            )
+        if _google_import_available():
+            _GOOGLE_AVAILABLE = True
+            return
+        raise RuntimeError(
+            "Google API client libraries were installed but could not be imported. "
+            "Please restart the application or install them manually."
         )
-        if result != 0:
-            raise RuntimeError("Failed to install Google API client dependencies.")
-        import googleapiclient  # type: ignore  # noqa: F401
+
+    raise RuntimeError(
+        "Google API client libraries are required but could not be loaded automatically. "
+        "Please install 'google-api-python-client' and 'google-auth-oauthlib'."
+    )
 
 
 def _settings_path() -> Path:
