@@ -1,11 +1,13 @@
 import json
+import logging
 import os
 import re
 import sqlite3
 import sys
+import threading
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 DB_FILENAME = "rugbase.db"
 
@@ -27,6 +29,62 @@ def resource_path(*parts: str) -> str:
 DB_PATH = resource_path(DB_FILENAME)
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+
+logger = logging.getLogger(__name__)
+
+
+_ITEM_UPSERT_LISTENERS: List[Callable[[str], None]] = []
+_ITEM_UPSERT_LISTENERS_LOCK = threading.Lock()
+
+
+def add_item_upsert_listener(listener: Callable[[str], None]) -> None:
+    """Register a callable that will be notified when an item is inserted or updated."""
+
+    if not callable(listener):
+        raise TypeError("listener must be callable")
+
+    with _ITEM_UPSERT_LISTENERS_LOCK:
+        if listener in _ITEM_UPSERT_LISTENERS:
+            logger.debug("Listener %r already registered for item upsert notifications", listener)
+            return
+        _ITEM_UPSERT_LISTENERS.append(listener)
+        logger.debug("Registered item upsert listener %r", listener)
+
+
+def remove_item_upsert_listener(listener: Callable[[str], None]) -> None:
+    """Remove a previously registered upsert listener."""
+
+    with _ITEM_UPSERT_LISTENERS_LOCK:
+        try:
+            _ITEM_UPSERT_LISTENERS.remove(listener)
+        except ValueError:
+            logger.debug("Attempted to remove unknown item upsert listener %r", listener)
+        else:
+            logger.debug("Removed item upsert listener %r", listener)
+
+
+def _notify_item_upsert(item_id: str) -> None:
+    """Invoke registered listeners for an item upsert event."""
+
+    with _ITEM_UPSERT_LISTENERS_LOCK:
+        listeners = list(_ITEM_UPSERT_LISTENERS)
+
+    if not listeners:
+        logger.debug("No item upsert listeners registered; skipping notification for %s", item_id)
+        return
+
+    logger.debug(
+        "Dispatching item upsert notification for %s to %d listener(s)",
+        item_id,
+        len(listeners),
+    )
+
+    for listener in listeners:
+        try:
+            listener(item_id)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Item upsert listener %r raised an exception", listener)
 
 
 PROCESSED_CHANGES_TABLE_SQL = """
