@@ -199,6 +199,7 @@ def initialize_database() -> None:
 
 
 def fetch_items(
+    rug_no_filter: Optional[str] = None,
     collection_filter: Optional[str] = None,
     brand_filter: Optional[str] = None,
     style_filter: Optional[str] = None,
@@ -208,6 +209,9 @@ def fetch_items(
     filters = []
     params: List[Any] = []
 
+    if rug_no_filter:
+        filters.append("LOWER(rug_no) LIKE ?")
+        params.append(f"%{rug_no_filter.lower()}%")
     if collection_filter:
         filters.append("LOWER(collection) LIKE ?")
         params.append(f"%{collection_filter.lower()}%")

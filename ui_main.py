@@ -52,11 +52,13 @@ class MainWindow:
         self.filter_frame = ttk.LabelFrame(self.root, text="Filters", padding=12)
         self.filter_frame.pack(fill=tk.X, pady=(5, 10))
 
+        self.rug_no_var = tk.StringVar()
         self.collection_var = tk.StringVar()
         self.brand_var = tk.StringVar()
         self.style_var = tk.StringVar()
 
         fields = [
+            ("Rug No", self.rug_no_var),
             ("Collection", self.collection_var),
             ("Brand", self.brand_var),
             ("Style", self.style_var),
@@ -214,6 +216,7 @@ class MainWindow:
         self.load_items()
 
     def on_clear_filters(self) -> None:
+        self.rug_no_var.set("")
         self.collection_var.set("")
         self.brand_var.set("")
         self.style_var.set("")
@@ -288,11 +291,12 @@ class MainWindow:
         messagebox.showinfo("Delete Item", "The selected item has been deleted.")
 
     def get_filtered_rows(self) -> list[dict]:
+        rug_no_filter = self.rug_no_var.get().strip() or None
         collection_filter = self.collection_var.get().strip() or None
         brand_filter = self.brand_var.get().strip() or None
         style_filter = self.style_var.get().strip() or None
 
-        return db.fetch_items(collection_filter, brand_filter, style_filter)
+        return db.fetch_items(rug_no_filter, collection_filter, brand_filter, style_filter)
 
     def _format_item_values(self, item: dict) -> tuple[str, ...]:
         values: list[str] = []
