@@ -140,13 +140,29 @@ def _iter_site_directories() -> Iterable[str]:
 
 
 def _refresh_site_packages() -> None:
-    added: list[str] = []
+    """Ensure any newly installed site-packages directories are importable."""
+
+    normalised = lambda value: os.path.normcase(os.path.abspath(value))
+    before = {normalised(entry) for entry in sys.path}
+
     for path in _iter_site_directories():
-        if os.path.isdir(path) and path not in sys.path:
-            sys.path.append(path)
-            added.append(path)
-    if added:
-        logger.debug("Added site-packages directories to sys.path: %s", added)
+        if not os.path.isdir(path):
+            continue
+        try:
+            site.addsitedir(path)
+        except Exception:  # pragma: no cover - defensive; addsitedir rarely fails
+            logger.debug("Failed to register site-packages directory: %s", path, exc_info=True)
+            continue
+
+    after = {normalised(entry) for entry in sys.path}
+    new_entries = [
+        entry
+        for entry in sys.path
+        if normalised(entry) in after - before
+    ]
+    if new_entries:
+        logger.debug("Added site-packages directories to sys.path: %s", new_entries)
+
     importlib.invalidate_caches()
 
 
