@@ -17,6 +17,7 @@ from core.excel import Workbook
 from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
 from ui.sync_settings import SyncSettingsWindow
 from ui.sync_worker import SyncWorker
+from ui.sync_panel import SyncPanel
 
 
 class MainWindow:
@@ -51,9 +52,19 @@ class MainWindow:
 
     def _create_widgets(self) -> None:
         self._build_menu()
-        self.root.configure(padx=12, pady=12)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        header_frame = ttk.Frame(self.root, padding=(10, 10))
+        self.dashboard_frame = ttk.Frame(self.notebook, padding=12)
+        self.dashboard_frame.columnconfigure(0, weight=1)
+        self.notebook.add(self.dashboard_frame, text="Dashboard")
+
+        sync_tab = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(sync_tab, text="Sync")
+        self.sync_panel = SyncPanel(sync_tab)
+        self.sync_panel.pack(fill=tk.BOTH, expand=True)
+
+        header_frame = ttk.Frame(self.dashboard_frame, padding=(10, 10))
         header_frame.pack(fill=tk.X)
         ttk.Label(header_frame, text="RugBase Inventory Dashboard", style="Header.TLabel").pack(
             anchor=tk.W
@@ -64,7 +75,7 @@ class MainWindow:
             style="SubHeader.TLabel",
         ).pack(anchor=tk.W, pady=(2, 0))
 
-        self.filter_frame = ttk.LabelFrame(self.root, text="Filters", padding=12)
+        self.filter_frame = ttk.LabelFrame(self.dashboard_frame, text="Filters", padding=12)
         self.filter_frame.pack(fill=tk.X, pady=(5, 10))
 
         self.rug_no_var = tk.StringVar()
@@ -98,7 +109,7 @@ class MainWindow:
         )
         self.clear_button.grid(row=0, column=spacer_col + 2, padx=(0, 0), pady=4, sticky=tk.E)
 
-        self.export_frame = ttk.LabelFrame(self.root, text="Import & Export", padding=12)
+        self.export_frame = ttk.LabelFrame(self.dashboard_frame, text="Import & Export", padding=12)
         self.export_frame.pack(fill=tk.X, pady=(0, 10))
 
         self.import_csv_button = ttk.Button(
@@ -121,11 +132,11 @@ class MainWindow:
         )
         self.export_xlsx_button.pack(side=tk.LEFT, padx=(10, 0))
 
-        self.sync_frame = ttk.LabelFrame(self.root, text="Drive Sync", padding=12)
-        self.sync_frame.pack(fill=tk.X, pady=(0, 10))
-        self.sync_frame.columnconfigure(0, weight=1)
+        self.drive_sync_frame = ttk.LabelFrame(self.dashboard_frame, text="Drive Sync", padding=12)
+        self.drive_sync_frame.pack(fill=tk.X, pady=(0, 10))
+        self.drive_sync_frame.columnconfigure(0, weight=1)
 
-        sync_status_frame = ttk.Frame(self.sync_frame)
+        sync_status_frame = ttk.Frame(self.drive_sync_frame)
         sync_status_frame.grid(row=0, column=0, sticky="nsew")
         sync_status_frame.columnconfigure(1, weight=1)
 
@@ -141,7 +152,7 @@ class MainWindow:
             foreground="#0b5394",
         ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
 
-        sync_button_frame = ttk.Frame(self.sync_frame)
+        sync_button_frame = ttk.Frame(self.drive_sync_frame)
         sync_button_frame.grid(row=0, column=1, sticky=tk.E)
 
         ttk.Button(sync_button_frame, text="Şimdi Senkronize Et", command=self.on_sync_now).grid(
@@ -157,9 +168,9 @@ class MainWindow:
             row=0, column=3, pady=2
         )
 
-        ttk.Separator(self.root).pack(fill=tk.X, pady=(0, 10))
+        ttk.Separator(self.dashboard_frame).pack(fill=tk.X, pady=(0, 10))
 
-        self.table_frame = ttk.Frame(self.root)
+        self.table_frame = ttk.Frame(self.dashboard_frame)
         self.table_frame.pack(fill=tk.BOTH, expand=True)
 
         self.column_defs = list(db.MASTER_SHEET_COLUMNS)
@@ -182,9 +193,9 @@ class MainWindow:
         self.table_frame.rowconfigure(0, weight=1)
         self.table_frame.columnconfigure(0, weight=1)
 
-        ttk.Separator(self.root).pack(fill=tk.X, pady=(10, 10))
+        ttk.Separator(self.dashboard_frame).pack(fill=tk.X, pady=(10, 10))
 
-        self.button_frame = ttk.LabelFrame(self.root, text="Item Actions", padding=12)
+        self.button_frame = ttk.LabelFrame(self.dashboard_frame, text="Item Actions", padding=12)
         self.button_frame.pack(fill=tk.X)
 
         self.add_button = ttk.Button(
@@ -232,7 +243,7 @@ class MainWindow:
 
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
-        self.footer_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
+        self.footer_frame = ttk.Frame(self.dashboard_frame, padding=(10, 0, 10, 10))
         self.footer_frame.pack(fill=tk.X, pady=(10, 0))
 
         self.totals_var = tk.StringVar(value="Total items: 0    Total area: 0.00")
@@ -634,4 +645,9 @@ class MainWindow:
 
     def _on_close(self) -> None:
         self.sync_worker.stop()
+        if hasattr(self, "sync_panel"):
+            try:
+                self.sync_panel.shutdown()
+            except Exception:  # pragma: no cover - defensive cleanup
+                pass
         self.root.destroy()

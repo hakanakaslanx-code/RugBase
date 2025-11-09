@@ -8,6 +8,11 @@ import db
 
 DEFAULT_SETTINGS_PATH = db.data_path("settings.json")
 
+DEFAULT_SPREADSHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
+DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
+SYNC_SETTINGS_PATH = db.data_path("sync_settings.json")
+DEFAULT_CREDENTIALS_PATH = db.data_path("credentials.json")
+
 DEFAULT_CONFIG = {
     "dymo_label": {
         "pdf_reference": "rdlcBarcodePrintingDymoVerticleWithMsrp.pdf",
@@ -88,6 +93,13 @@ class DymoLabelSettings:
     layout: LayoutSpec
 
 
+@dataclass
+class GoogleSyncSettings:
+    spreadsheet_id: str
+    credential_path: str
+    service_account_email: str = DEFAULT_SERVICE_ACCOUNT_EMAIL
+
+
 def _ensure_default_settings(path: str) -> Dict[str, Dict]:
     if not os.path.exists(path):
         directory = os.path.dirname(path)
@@ -143,11 +155,67 @@ def load_settings(path: str = DEFAULT_SETTINGS_PATH) -> DymoLabelSettings:
     )
 
 
+def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, str]:
+    default_settings = {
+        "spreadsheet_id": DEFAULT_SPREADSHEET_ID,
+        "credential_path": DEFAULT_CREDENTIALS_PATH,
+        "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
+    }
+    if not os.path.exists(path):
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(default_settings, handle, indent=2)
+        return json.loads(json.dumps(default_settings))
+
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+
+    merged = dict(default_settings)
+    merged.update({key: value for key, value in data.items() if isinstance(value, str)})
+    return merged
+
+
+def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSettings:
+    data = _ensure_sync_settings(path)
+    return GoogleSyncSettings(
+        spreadsheet_id=data.get("spreadsheet_id", DEFAULT_SPREADSHEET_ID),
+        credential_path=data.get("credential_path", DEFAULT_CREDENTIALS_PATH),
+        service_account_email=data.get(
+            "service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL
+        ),
+    )
+
+
+def save_google_sync_settings(
+    settings: GoogleSyncSettings, path: str = SYNC_SETTINGS_PATH
+) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    payload = {
+        "spreadsheet_id": settings.spreadsheet_id,
+        "credential_path": settings.credential_path,
+        "service_account_email": settings.service_account_email,
+    }
+
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
 __all__ = [
     "BarcodeSpec",
     "DymoLabelSettings",
+    "GoogleSyncSettings",
     "FontSpec",
     "LayoutSpec",
     "MarginSpec",
+    "DEFAULT_SPREADSHEET_ID",
+    "DEFAULT_SERVICE_ACCOUNT_EMAIL",
+    "DEFAULT_CREDENTIALS_PATH",
     "load_settings",
+    "load_google_sync_settings",
+    "save_google_sync_settings",
 ]

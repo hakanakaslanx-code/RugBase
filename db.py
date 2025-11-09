@@ -39,6 +39,12 @@ DB_PATH = data_path(DB_FILENAME)
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
+def _now_iso() -> str:
+    """Return the current UTC timestamp formatted as ISO 8601 without microseconds."""
+
+    return datetime.utcnow().replace(microsecond=0).isoformat()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -162,8 +168,10 @@ TABLE_COLUMNS: List[Tuple[str, str]] = [
         (field, "REAL" if field in NUMERIC_FIELDS else "TEXT")
         for field in MASTER_SHEET_FIELDS
     ],
-    ("created_at", "TEXT DEFAULT (CURRENT_TIMESTAMP)"),
-    ("updated_at", "TEXT DEFAULT (CURRENT_TIMESTAMP)"),
+    ("qty", "INTEGER DEFAULT 0"),
+    ("created_at", "TEXT"),
+    ("updated_at", "TEXT"),
+    ("version", "INTEGER DEFAULT 1"),
     ("status", "TEXT DEFAULT 'in_stock'"),
     ("location", "TEXT DEFAULT 'warehouse'"),
     ("consignment_id", "INTEGER"),
@@ -400,11 +408,13 @@ def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
 def update_item(item_data: Dict[str, Any]) -> None:
     set_clause = ", ".join(f"{field} = ?" for field in UPDATABLE_FIELDS)
     params = [item_data.get(field) for field in UPDATABLE_FIELDS]
-    params.append(item_data["item_id"])
+    now = _now_iso()
+    params.extend([now, item_data["item_id"]])
 
     with get_connection() as conn:
         conn.execute(
-            f"UPDATE item SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE item_id = ?",
+            f"UPDATE item SET {set_clause}, updated_at = ?, version = COALESCE(version, 0) + 1 "
+            "WHERE item_id = ?",
             params,
         )
         conn.commit()
@@ -455,9 +465,11 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
                     merged_data[field] = item_data[field]
 
             params = [merged_data.get(field) for field in updatable_fields]
-            params.append(item_id)
+            now = _now_iso()
+            params.extend([now, item_id])
             conn.execute(
-                f"UPDATE item SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE item_id = ?",
+                f"UPDATE item SET {set_clause}, updated_at = ?, version = COALESCE(version, 0) + 1 "
+                "WHERE item_id = ?",
                 params,
             )
             conn.commit()
@@ -465,13 +477,15 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
             return item_id, False
 
         new_item_id = item_data.get("item_id") or str(uuid.uuid4())
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        insert_fields = ["item_id"] + updatable_fields + ["created_at", "updated_at"]
+        now = _now_iso()
+        insert_fields = ["item_id"] + updatable_fields + ["qty", "created_at", "updated_at", "version"]
         insert_values = [
             new_item_id,
             *[item_data.get(field) for field in updatable_fields],
+            item_data.get("qty", 0),
             now,
             now,
+            1,
         ]
         placeholders = ", ".join("?" for _ in insert_fields)
         conn.execute(
@@ -487,13 +501,15 @@ def insert_item(item_data: Dict[str, Any]) -> str:
     """Insert a new item into the database and return its identifier."""
 
     item_id = item_data.get("item_id") or str(uuid.uuid4())
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    insert_fields = ["item_id", *UPDATABLE_FIELDS, "created_at", "updated_at"]
+    now = _now_iso()
+    insert_fields = ["item_id", *UPDATABLE_FIELDS, "qty", "created_at", "updated_at", "version"]
     insert_values = [
         item_id,
         *[item_data.get(field) for field in UPDATABLE_FIELDS],
+        item_data.get("qty", 0),
         now,
         now,
+        1,
     ]
     placeholders = ", ".join("?" for _ in insert_fields)
 
@@ -510,12 +526,149 @@ def insert_item(item_data: Dict[str, Any]) -> str:
 def delete_item(item_id: str) -> None:
     """Remove an item from the database."""
 
+    now = _now_iso()
     with get_connection() as conn:
         conn.execute(
-            "UPDATE item SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE item_id = ?",
-            (item_id,),
+            "UPDATE item SET status = 'deleted', updated_at = ?, version = COALESCE(version, 0) + 1 "
+            "WHERE item_id = ?",
+            (now, item_id),
         )
         conn.commit()
+
+
+def _row_to_sync_payload(row: sqlite3.Row) -> Dict[str, Any]:
+    """Convert a database row to the sync payload structure."""
+
+    def _clean(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    payload: Dict[str, Any] = {
+        "id": row["item_id"],
+        "rug_no": _clean(row["rug_no"]) or "",
+        "sku": _clean(row["upc"]) or "",
+        "collection": _clean(row["collection"]) or "",
+        "size": _clean(row["st_size"]) or "",
+        "price": _clean(row["retail"]) or "",
+        "qty": int(row["qty"]) if row["qty"] is not None else 0,
+        "updated_at": row["updated_at"],
+        "version": int(row["version"]) if row["version"] is not None else 1,
+    }
+    return payload
+
+
+def fetch_item_for_sync(item_id: str) -> Optional[Dict[str, Any]]:
+    """Return a single item row formatted for synchronisation."""
+
+    query = (
+        "SELECT item_id, rug_no, upc, collection, st_size, retail, qty, updated_at, version "
+        "FROM item WHERE item_id = ?"
+    )
+
+    with get_connection() as conn:
+        cursor = conn.execute(query, (item_id,))
+        row = cursor.fetchone()
+        return _row_to_sync_payload(row) if row else None
+
+
+def fetch_items_for_sync_snapshot() -> List[Dict[str, Any]]:
+    """Return all non-deleted items formatted for synchronisation."""
+
+    query = (
+        "SELECT item_id, rug_no, upc, collection, st_size, retail, qty, updated_at, version "
+        "FROM item WHERE COALESCE(status, 'in_stock') != 'deleted'"
+    )
+
+    with get_connection() as conn:
+        cursor = conn.execute(query)
+        rows = cursor.fetchall()
+    return [_row_to_sync_payload(row) for row in rows]
+
+
+def apply_remote_sync_row(row: Dict[str, Any]) -> None:
+    """Apply a row received from Google Sheets to the local database."""
+
+    item_id = row["id"]
+    now = row.get("updated_at") or _now_iso()
+    version = int(row.get("version") or 1)
+    qty_value = row.get("qty")
+    try:
+        qty = int(qty_value) if qty_value is not None else 0
+    except (TypeError, ValueError):
+        qty = 0
+
+    def _normalise(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    values = (
+        _normalise(row.get("rug_no")),
+        _normalise(row.get("sku")),
+        _normalise(row.get("collection")),
+        _normalise(row.get("size")),
+        _normalise(row.get("price")),
+        qty,
+        now,
+        version,
+        item_id,
+    )
+
+    insert_values = (
+        item_id,
+        values[0],
+        values[1],
+        values[2],
+        values[3],
+        values[4],
+        qty,
+        now,
+        now,
+        version,
+    )
+
+    with get_connection() as conn:
+        cursor = conn.execute("SELECT 1 FROM item WHERE item_id = ?", (item_id,))
+        if cursor.fetchone():
+            conn.execute(
+                """
+                UPDATE item
+                SET rug_no = ?, upc = ?, collection = ?, st_size = ?, retail = ?, qty = ?,
+                    updated_at = ?, version = ?
+                WHERE item_id = ?
+                """,
+                values,
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO item (
+                    item_id, rug_no, upc, collection, st_size, retail, qty,
+                    created_at, updated_at, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                insert_values,
+            )
+        conn.commit()
+
+    _notify_item_upsert(item_id)
+
+
+def bump_item_version(item_id: str) -> None:
+    """Increment an item's version and touch the update timestamp."""
+
+    now = _now_iso()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE item SET version = COALESCE(version, 0) + 1, updated_at = ? WHERE item_id = ?",
+            (now, item_id),
+        )
+        conn.commit()
+
+    _notify_item_upsert(item_id)
 
 
 def generate_item_id() -> str:
@@ -711,11 +864,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE item ADD COLUMN {column} {definition}")
 
-    # Ensure timestamps are populated for existing rows
-    conn.execute(
-        "UPDATE item SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)"
-    )
-    conn.execute(
-        "UPDATE item SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)"
-    )
+    # Normalise timestamps and versions for existing rows
+    conn.execute("UPDATE item SET created_at = REPLACE(created_at, ' ', 'T') WHERE created_at LIKE '% %'")
+    conn.execute("UPDATE item SET updated_at = REPLACE(updated_at, ' ', 'T') WHERE updated_at LIKE '% %'")
+
+    now = _now_iso()
+    conn.execute("UPDATE item SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now,))
+    conn.execute("UPDATE item SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''", (now,))
+    conn.execute("UPDATE item SET version = COALESCE(NULLIF(version, 0), 1)")
     conn.commit()
