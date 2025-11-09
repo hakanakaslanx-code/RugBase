@@ -1,5 +1,7 @@
 import csv
 import os
+import subprocess
+import sys
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -7,7 +9,7 @@ from tkinter import font as tkfont
 from typing import Optional
 
 import db
-from core import importer, updater
+from core import app_paths, importer, updater
 from core.logging_config import get_log_path
 from core.version import __version__
 from ui_item_card import ItemCardWindow
@@ -498,6 +500,7 @@ class MainWindow:
         menubar = tk.Menu(self.root)
         tools_menu = tk.Menu(menubar, tearoff=0)
         tools_menu.add_command(label="Open Debug Log", command=self.open_debug_log)
+        tools_menu.add_command(label="Open Data Folder", command=self.open_data_folder)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         self.root.config(menu=menubar)
 
@@ -540,6 +543,23 @@ class MainWindow:
         ttk.Label(window, text=str(log_path), foreground="#555555").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 10)
         )
+
+    def open_data_folder(self) -> None:
+        path = app_paths.APP_DIR
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:
+            messagebox.showerror(
+                "Data Folder",
+                f"Klasör açılamadı: {exc}\n{path}",
+                parent=self.root,
+            )
 
     def _on_close(self) -> None:
         if hasattr(self, "sync_panel"):

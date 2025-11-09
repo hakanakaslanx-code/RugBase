@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,10 @@ else:  # pragma: no cover - simple attribute assignment
 
 
 SCOPES: Iterable[str] = ("https://www.googleapis.com/auth/spreadsheets",)
-SHEET_NAME = "items"
+DEFAULT_WORKSHEET_TITLE = "items"
+METADATA_SHEET = "__metadata__"
+METADATA_HEADERS = ["name", "mtime", "sha256"]
+METADATA_ROW_KEY = "rugbase.db"
 HEADERS: List[str] = [
     "id",
     "rug_no",
@@ -104,12 +107,19 @@ def get_client(credentials_path: str):
     return build("sheets", "v4", credentials=credentials, cache_discovery=False)  # type: ignore[call-arg]
 
 
-def ensure_sheet(service, spreadsheet_id: str) -> None:
+def _normalise_worksheet(title: Optional[str]) -> str:
+    title = (title or DEFAULT_WORKSHEET_TITLE).strip()
+    return title or DEFAULT_WORKSHEET_TITLE
+
+
+def ensure_sheet(service, spreadsheet_id: str, worksheet_title: Optional[str] = None) -> None:
     """Ensure the target spreadsheet has the expected worksheet and headers."""
 
     spreadsheet_id = parse_spreadsheet_id(spreadsheet_id)
     if not spreadsheet_id:
         raise SpreadsheetAccessError("Geçerli bir Spreadsheet ID gerekli.")
+
+    worksheet = _normalise_worksheet(worksheet_title)
 
     try:
         metadata = (
@@ -122,17 +132,17 @@ def ensure_sheet(service, spreadsheet_id: str) -> None:
 
     sheets = metadata.get("sheets", []) if isinstance(metadata, dict) else []
     sheet_exists = any(
-        SHEET_NAME == sheet.get("properties", {}).get("title") for sheet in sheets
+        worksheet == sheet.get("properties", {}).get("title") for sheet in sheets
     )
 
     if not sheet_exists:
-        logger.info("Creating worksheet '%s'", SHEET_NAME)
+        logger.info("Creating worksheet '%s'", worksheet)
         try:
             service.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id,
                 body={
                     "requests": [
-                        {"addSheet": {"properties": {"title": SHEET_NAME}}}
+                        {"addSheet": {"properties": {"title": worksheet}}}
                     ]
                 },
             ).execute()
@@ -146,7 +156,7 @@ def ensure_sheet(service, spreadsheet_id: str) -> None:
         result = (
             service.spreadsheets()
             .values()
-            .get(spreadsheetId=spreadsheet_id, range=f"{SHEET_NAME}!1:1")
+            .get(spreadsheetId=spreadsheet_id, range=f"{worksheet}!1:1")
             .execute()
         )
     except HttpError as exc:  # pragma: no cover - depends on external API
@@ -154,32 +164,208 @@ def ensure_sheet(service, spreadsheet_id: str) -> None:
 
     header_values = result.get("values", []) if isinstance(result, dict) else []
     if not header_values or [cell.strip() for cell in header_values[0]] != HEADERS:
-        logger.info("Writing header row for worksheet '%s'", SHEET_NAME)
+        logger.info("Writing header row for worksheet '%s'", worksheet)
         try:
-            service.spreadsheets().values().update(
+            service.spreadsheets().values().batchUpdate(
                 spreadsheetId=spreadsheet_id,
-                range=f"{SHEET_NAME}!A1",
-                valueInputOption="RAW",
-                body={"values": [HEADERS]},
+                body={
+                    "valueInputOption": "RAW",
+                    "data": [
+                        {
+                            "range": f"{worksheet}!A1",
+                            "values": [HEADERS],
+                        }
+                    ],
+                },
             ).execute()
         except HttpError as exc:  # pragma: no cover - depends on external API
             raise SpreadsheetAccessError(
                 f"Başlık satırı güncellenemedi: {exc}"
             ) from exc
 
+    _ensure_metadata_sheet(service, spreadsheet_id)
 
-def read_rows(service, spreadsheet_id: str) -> List[Dict[str, str]]:
+
+def _ensure_metadata_sheet(service, spreadsheet_id: str) -> None:
+    spreadsheet_id = parse_spreadsheet_id(spreadsheet_id)
+    if not spreadsheet_id:
+        return
+
+    try:
+        metadata = (
+            service.spreadsheets()
+            .get(spreadsheetId=spreadsheet_id, includeGridData=False)
+            .execute()
+        )
+    except HttpError:  # pragma: no cover - defensive fallback
+        return
+
+    sheets = metadata.get("sheets", []) if isinstance(metadata, dict) else []
+    exists = any(
+        METADATA_SHEET == sheet.get("properties", {}).get("title") for sheet in sheets
+    )
+    if not exists:
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={
+                    "requests": [
+                        {"addSheet": {"properties": {"title": METADATA_SHEET}}}
+                    ]
+                },
+            ).execute()
+        except HttpError:  # pragma: no cover - depends on external API
+            return
+
+    try:
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=spreadsheet_id, range=f"{METADATA_SHEET}!1:1")
+            .execute()
+        )
+    except HttpError:  # pragma: no cover - depends on external API
+        return
+
+    header_values = result.get("values", []) if isinstance(result, dict) else []
+    if not header_values or [cell.strip() for cell in header_values[0]] != METADATA_HEADERS:
+        try:
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={
+                    "valueInputOption": "RAW",
+                    "data": [
+                        {
+                            "range": f"{METADATA_SHEET}!A1",
+                            "values": [METADATA_HEADERS],
+                        }
+                    ],
+                },
+            ).execute()
+        except HttpError:  # pragma: no cover - depends on external API
+            return
+
+
+def read_database_metadata(service, spreadsheet_id: str) -> Dict[str, str]:
+    """Return stored database metadata from the spreadsheet."""
+
+    spreadsheet_id = parse_spreadsheet_id(spreadsheet_id)
+    if not spreadsheet_id:
+        return {}
+
+    try:
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=spreadsheet_id, range=f"{METADATA_SHEET}!A2:C")
+            .execute()
+        )
+    except HttpError as exc:  # pragma: no cover - depends on external API
+        raise SpreadsheetAccessError(f"Metadata okunamadı: {exc}") from exc
+
+    values = result.get("values", []) if isinstance(result, dict) else []
+    for row in values:
+        padded = list(row) + [""] * max(0, len(METADATA_HEADERS) - len(row))
+        if padded and padded[0].strip() == METADATA_ROW_KEY:
+            return {
+                "name": METADATA_ROW_KEY,
+                "mtime": padded[1].strip(),
+                "sha256": padded[2].strip(),
+            }
+    return {}
+
+
+def write_database_metadata(service, spreadsheet_id: str, mtime: str, sha256: str) -> None:
+    """Persist local database metadata to the spreadsheet."""
+
+    spreadsheet_id = parse_spreadsheet_id(spreadsheet_id)
+    if not spreadsheet_id:
+        raise SpreadsheetAccessError("Geçerli bir Spreadsheet ID gerekli.")
+
+    _ensure_metadata_sheet(service, spreadsheet_id)
+    payload = [
+        {
+            "range": f"{METADATA_SHEET}!A2",
+            "values": [[METADATA_ROW_KEY, mtime, sha256]],
+        }
+    ]
+
+    try:
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"valueInputOption": "RAW", "data": payload},
+        ).execute()
+    except HttpError as exc:  # pragma: no cover - depends on external API
+        raise SpreadsheetAccessError(f"Metadata yazılamadı: {exc}") from exc
+
+
+def verify_roundtrip(service, spreadsheet_id: str, worksheet_title: Optional[str] = None) -> None:
+    """Write a sentinel value and clear it to verify API access."""
+
+    spreadsheet_id = parse_spreadsheet_id(spreadsheet_id)
+    if not spreadsheet_id:
+        raise SpreadsheetAccessError("Geçerli bir Spreadsheet ID gerekli.")
+
+    worksheet = _normalise_worksheet(worksheet_title)
+    test_range = f"{worksheet}!A1"
+
+    try:
+        existing = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=spreadsheet_id, range=test_range)
+            .execute()
+        )
+    except HttpError as exc:  # pragma: no cover - depends on external API
+        raise SpreadsheetAccessError(f"Bağlantı doğrulaması başarısız: {exc}") from exc
+
+    original = existing.get("values", []) if isinstance(existing, dict) else []
+    if not original:
+        original = [[""]]
+
+    try:
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "valueInputOption": "RAW",
+                "data": [
+                    {
+                        "range": test_range,
+                        "values": [["RugBase OK"]],
+                    }
+                ],
+            },
+        ).execute()
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "valueInputOption": "RAW",
+                "data": [
+                    {
+                        "range": test_range,
+                        "values": original,
+                    }
+                ],
+            },
+        ).execute()
+    except HttpError as exc:  # pragma: no cover - depends on external API
+        raise SpreadsheetAccessError(f"Bağlantı doğrulaması başarısız: {exc}") from exc
+
+
+def read_rows(service, spreadsheet_id: str, worksheet_title: Optional[str] = None) -> List[Dict[str, str]]:
     """Return all data rows from the worksheet as dictionaries."""
 
     spreadsheet_id = parse_spreadsheet_id(spreadsheet_id)
     if not spreadsheet_id:
         return []
 
+    worksheet = _normalise_worksheet(worksheet_title)
+
     try:
         result = (
             service.spreadsheets()
             .values()
-            .get(spreadsheetId=spreadsheet_id, range=f"{SHEET_NAME}!A2:I")
+            .get(spreadsheetId=spreadsheet_id, range=f"{worksheet}!A2:I")
             .execute()
         )
     except HttpError as exc:  # pragma: no cover - depends on external API
@@ -193,39 +379,50 @@ def read_rows(service, spreadsheet_id: str) -> List[Dict[str, str]]:
     return rows
 
 
-def write_rows(service, spreadsheet_id: str, rows: List[Dict[str, str]]) -> None:
+def write_rows(
+    service, spreadsheet_id: str, rows: List[Dict[str, str]], worksheet_title: Optional[str] = None
+) -> None:
     """Replace all worksheet data rows with ``rows``."""
 
     spreadsheet_id = parse_spreadsheet_id(spreadsheet_id)
     if not spreadsheet_id:
         raise SpreadsheetAccessError("Geçerli bir Spreadsheet ID gerekli.")
 
+    worksheet = _normalise_worksheet(worksheet_title)
     values = [[row.get(header, "") for header in HEADERS] for row in rows]
-    body = {"values": [HEADERS, *values]}
+    data = [
+        {
+            "range": f"{worksheet}!A1",
+            "values": [HEADERS],
+        }
+    ]
+    if values:
+        data.append({"range": f"{worksheet}!A2", "values": values})
 
     try:
-        service.spreadsheets().values().clear(
-            spreadsheetId=spreadsheet_id, range=f"{SHEET_NAME}!A2:Z"
+        service.spreadsheets().values().batchClear(
+            spreadsheetId=spreadsheet_id, body={"ranges": [f"{worksheet}!A2:Z"]}
         ).execute()
-        service.spreadsheets().values().update(
+        service.spreadsheets().values().batchUpdate(
             spreadsheetId=spreadsheet_id,
-            range=f"{SHEET_NAME}!A1",
-            valueInputOption="RAW",
-            body=body,
+            body={"valueInputOption": "RAW", "data": data},
         ).execute()
     except HttpError as exc:  # pragma: no cover - depends on external API
         raise SpreadsheetAccessError(f"Satırlar yazılamadı: {exc}") from exc
 
 
 def upsert_rows(
-    service, spreadsheet_id: str, rows: List[Dict[str, str]]
+    service,
+    spreadsheet_id: str,
+    rows: List[Dict[str, str]],
+    worksheet_title: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """Merge ``rows`` into the worksheet and return the resulting dataset."""
 
     if not rows:
-        return read_rows(service, spreadsheet_id)
+        return read_rows(service, spreadsheet_id, worksheet_title)
 
-    existing = read_rows(service, spreadsheet_id)
+    existing = read_rows(service, spreadsheet_id, worksheet_title)
     replacements = {
         row.get("id"): row for row in rows if row.get("id")
     }
@@ -246,13 +443,13 @@ def upsert_rows(
             continue
         updated.append(row)
 
-    write_rows(service, spreadsheet_id, updated)
+    write_rows(service, spreadsheet_id, updated, worksheet_title)
     return updated
 
 
 __all__ = [
     "HEADERS",
-    "SHEET_NAME",
+    "DEFAULT_WORKSHEET_TITLE",
     "SheetsSyncError",
     "MissingDependencyError",
     "CredentialsFileNotFoundError",
@@ -263,6 +460,9 @@ __all__ = [
     "read_rows",
     "write_rows",
     "upsert_rows",
+    "read_database_metadata",
+    "write_database_metadata",
+    "verify_roundtrip",
     "parse_spreadsheet_id",
     "is_api_available",
 ]

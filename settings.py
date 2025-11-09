@@ -4,14 +4,20 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 import db
+import dependency_loader
 
 
 DEFAULT_SETTINGS_PATH = db.data_path("settings.json")
 
 DEFAULT_SPREADSHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
 DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
+DEFAULT_WORKSHEET_TITLE = "items"
 SYNC_SETTINGS_PATH = db.data_path("sync_settings.json")
-DEFAULT_CREDENTIALS_PATH = db.data_path("credentials.json")
+_BUNDLED_CREDENTIALS = dependency_loader.default_credentials_path("credentials.json")
+if _BUNDLED_CREDENTIALS is not None:
+    DEFAULT_CREDENTIALS_PATH = str(_BUNDLED_CREDENTIALS)
+else:
+    DEFAULT_CREDENTIALS_PATH = db.data_path("credentials", "credentials.json")
 
 DEFAULT_CONFIG = {
     "dymo_label": {
@@ -98,6 +104,7 @@ class GoogleSyncSettings:
     spreadsheet_id: str
     credential_path: str
     service_account_email: str = DEFAULT_SERVICE_ACCOUNT_EMAIL
+    worksheet_title: str = DEFAULT_WORKSHEET_TITLE
 
 
 def _ensure_default_settings(path: str) -> Dict[str, Dict]:
@@ -160,6 +167,7 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, str]:
         "spreadsheet_id": DEFAULT_SPREADSHEET_ID,
         "credential_path": DEFAULT_CREDENTIALS_PATH,
         "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
+        "worksheet_title": DEFAULT_WORKSHEET_TITLE,
     }
     if not os.path.exists(path):
         directory = os.path.dirname(path)
@@ -185,6 +193,7 @@ def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSetti
         service_account_email=data.get(
             "service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL
         ),
+        worksheet_title=data.get("worksheet_title", DEFAULT_WORKSHEET_TITLE),
     )
 
 
@@ -199,6 +208,7 @@ def save_google_sync_settings(
         "spreadsheet_id": settings.spreadsheet_id,
         "credential_path": settings.credential_path,
         "service_account_email": settings.service_account_email,
+        "worksheet_title": settings.worksheet_title,
     }
 
     with open(path, "w", encoding="utf-8") as handle:
@@ -214,8 +224,10 @@ __all__ = [
     "MarginSpec",
     "DEFAULT_SPREADSHEET_ID",
     "DEFAULT_SERVICE_ACCOUNT_EMAIL",
+    "DEFAULT_WORKSHEET_TITLE",
     "DEFAULT_CREDENTIALS_PATH",
     "load_settings",
     "load_google_sync_settings",
     "save_google_sync_settings",
 ]
+import dependency_loader

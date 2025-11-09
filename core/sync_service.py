@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import db
 
 from . import sheets_sync
+from .hash import file_sha256
 from settings import GoogleSyncSettings
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,26 @@ def _rows_equal(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     return True
 
 
+def _local_database_path() -> Path:
+    return Path(db.DB_PATH).resolve()
+
+
+def _local_metadata() -> Dict[str, str]:
+    path = _local_database_path()
+    if not path.exists():
+        return {}
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+    return {
+        "name": sheets_sync.METADATA_ROW_KEY,
+        "mtime": mtime,
+        "sha256": file_sha256(str(path)),
+    }
+
+
 def _prepare_sheet_row(row: Dict[str, Any]) -> Dict[str, str]:
     prepared: Dict[str, str] = {}
     for key in sheets_sync.HEADERS:
@@ -105,14 +127,29 @@ class SyncService:
         """Ensure that credentials and spreadsheet access are valid."""
 
         client = sheets_sync.get_client(settings.credential_path)
-        sheets_sync.ensure_sheet(client, settings.spreadsheet_id)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        sheets_sync.verify_roundtrip(client, settings.spreadsheet_id, settings.worksheet_title)
+
+    def get_local_metadata(self) -> Dict[str, str]:
+        """Return metadata for the local database file."""
+
+        return _local_metadata()
+
+    def get_remote_metadata(self, settings: GoogleSyncSettings) -> Dict[str, str]:
+        """Fetch the metadata stored alongside the spreadsheet."""
+
+        client = sheets_sync.get_client(settings.credential_path)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        return sheets_sync.read_database_metadata(client, settings.spreadsheet_id)
 
     def pull(self, settings: GoogleSyncSettings) -> Dict[str, int]:
         """Synchronise data from Google Sheets into SQLite."""
 
         client = sheets_sync.get_client(settings.credential_path)
-        sheets_sync.ensure_sheet(client, settings.spreadsheet_id)
-        remote_rows = sheets_sync.read_rows(client, settings.spreadsheet_id)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        remote_rows = sheets_sync.read_rows(
+            client, settings.spreadsheet_id, settings.worksheet_title
+        )
 
         stats = {"inserted": 0, "updated": 0, "skipped": 0, "conflicts": 0}
 
@@ -172,14 +209,17 @@ class SyncService:
                 self._log(f"Çakışma çözümü: işlem atlandı ({item_id})")
                 stats["conflicts"] += 1
 
+        self._persist_metadata(client, settings)
         return stats
 
     def push(self, settings: GoogleSyncSettings) -> Dict[str, int]:
         """Synchronise data from SQLite to Google Sheets."""
 
         client = sheets_sync.get_client(settings.credential_path)
-        sheets_sync.ensure_sheet(client, settings.spreadsheet_id)
-        remote_rows = sheets_sync.read_rows(client, settings.spreadsheet_id)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        remote_rows = sheets_sync.read_rows(
+            client, settings.spreadsheet_id, settings.worksheet_title
+        )
         remote_index = {
             row.get("id"): _normalise_remote_row(row) for row in remote_rows if row.get("id")
         }
@@ -240,7 +280,13 @@ class SyncService:
                 stats["conflicts"] += 1
 
         if pending_updates:
-            sheets_sync.upsert_rows(client, settings.spreadsheet_id, pending_updates)
+            sheets_sync.upsert_rows(
+                client,
+                settings.spreadsheet_id,
+                pending_updates,
+                settings.worksheet_title,
+            )
+        self._persist_metadata(client, settings)
 
         return stats
 
@@ -254,6 +300,20 @@ class SyncService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _persist_metadata(self, client, settings: GoogleSyncSettings) -> None:
+        metadata = _local_metadata()
+        if not metadata:
+            return
+        try:
+            sheets_sync.write_database_metadata(
+                client,
+                settings.spreadsheet_id,
+                metadata.get("mtime", ""),
+                metadata.get("sha256", ""),
+            )
+        except sheets_sync.SheetsSyncError as exc:
+            self._log(f"Metadata güncellenemedi: {exc}")
+
     def _log(self, message: str) -> None:
         if self._log_callback:
             try:

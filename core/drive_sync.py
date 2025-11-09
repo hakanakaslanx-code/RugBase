@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
 import db
-from core import app_paths, dependencies, drive_api
+import dependency_loader
+from core import app_paths, drive_api
 from core.hash import file_sha256
 
 DB_FILENAME = "rugbase.db"
@@ -84,8 +85,9 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _default_token_path() -> str:
-    token_dir = app_paths.ensure_directory(app_paths.TOKENS_DIR)
-    return str(token_dir / TOKEN_FILENAME)
+    token_file = app_paths.data_path(TOKEN_FILENAME)
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    return str(token_file)
 
 
 def _resolve_token_path(token_path: Optional[str]) -> str:
@@ -93,13 +95,10 @@ def _resolve_token_path(token_path: Optional[str]) -> str:
     if token_path:
         expanded = Path(os.path.expanduser(str(token_path))).resolve()
         parts = [part.lower() for part in expanded.parts]
-        if "desktop" not in parts:
-            try:
-                expanded.relative_to(app_paths.APP_DIR)
-            except ValueError:
-                logger.debug("Token path %s outside app directory; using default", expanded)
-            else:
-                default_path = expanded
+        if "desktop" in parts:
+            logger.warning("Token path on Desktop is not permitted; using default location")
+        else:
+            default_path = expanded
     default_path.parent.mkdir(parents=True, exist_ok=True)
     return str(default_path)
 
@@ -112,19 +111,33 @@ def _ensure_token_directory(token_path: str) -> str:
     return resolved_path
 
 
-def _credentials_storage_path() -> Path:
-    path = app_paths.data_path(CREDENTIALS_FILENAME)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+def _credentials_storage_path(filename: str = CREDENTIALS_FILENAME) -> Path:
+    directory = app_paths.data_path("credentials")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / filename
+
+
+def _default_client_secret_path() -> str:
+    bundled = dependency_loader.default_credentials_path(CREDENTIALS_FILENAME)
+    if bundled:
+        return str(bundled)
+    storage = _credentials_storage_path()
+    return str(storage) if storage.exists() else ""
 
 
 def _normalise_client_secret_path(candidate: Optional[str]) -> str:
     destination = _credentials_storage_path()
     if not candidate:
+        bundled = dependency_loader.default_credentials_path(CREDENTIALS_FILENAME)
+        if bundled:
+            return str(bundled)
         return str(destination) if destination.exists() else ""
     source_path = Path(os.path.expanduser(str(candidate))).resolve()
-    if source_path == destination and destination.exists():
+    if destination.exists() and source_path == destination:
         return str(destination)
+    bundled = dependency_loader.default_credentials_path(CREDENTIALS_FILENAME)
+    if bundled and source_path == bundled.resolve():
+        return str(bundled)
     if not source_path.exists():
         raise FileNotFoundError(f"Client secret file not found: {source_path}")
     try:
@@ -137,18 +150,11 @@ def _normalise_client_secret_path(candidate: Optional[str]) -> str:
     return str(destination)
 
 
-_GOOGLE_DEPENDENCIES = (
-    "google-api-python-client",
-    "google-auth-oauthlib",
-    "google-auth",
-)
 _GOOGLE_AVAILABLE = False
-_GOOGLE_INSTALL_ATTEMPTED = False
 
 logger = logging.getLogger(__name__)
 
 app_paths.ensure_app_structure()
-app_paths.ensure_vendor_on_path()
 
 
 def _iter_site_directories() -> Iterable[str]:
@@ -224,62 +230,28 @@ def _google_import_available() -> bool:
     return True
 
 
-def _ensure_google_dependencies_installed() -> None:
-    global _GOOGLE_AVAILABLE, _GOOGLE_INSTALL_ATTEMPTED
+def _ensure_google_dependencies_installed() -> Optional[str]:
+    global _GOOGLE_AVAILABLE
 
     if _GOOGLE_AVAILABLE:
-        return
+        return None
+
+    if dependency_loader.google_dependencies_available():
+        _GOOGLE_AVAILABLE = True
+        logger.debug("Google API client libraries detected by dependency loader")
+        return None
 
     app_paths.ensure_vendor_on_path()
     _refresh_site_packages()
 
     if _google_import_available():
         _GOOGLE_AVAILABLE = True
-        logger.debug("Google API client libraries already available")
-        return
+        logger.debug("Google API client libraries available on sys.path")
+        return None
 
-    if not _GOOGLE_INSTALL_ATTEMPTED:
-        _GOOGLE_INSTALL_ATTEMPTED = True
-        logger.info("Attempting to install Google API client libraries")
-        vendor_dir = str(app_paths.ensure_vendor_on_path())
-        success, output = dependencies.install_packages(
-            _GOOGLE_DEPENDENCIES,
-            target=vendor_dir,
-            upgrade=True,
-        )
-        if not success:
-            logger.error("Automatic installation of Google API client libraries failed: %s", output)
-            raise RuntimeError(
-                "Failed to install Google API client dependencies automatically. "
-                f"Details: {output}"
-            )
-        logger.info("Google API client libraries installed; refreshing module search paths")
-        app_paths.ensure_vendor_on_path()
-        _refresh_site_packages()
-        for module in (
-            "google",
-            "googleapiclient",
-            "google_auth_oauthlib",
-            "google.auth",
-        ):
-            sys.modules.pop(module, None)
-        importlib.invalidate_caches()
-        if _google_import_available():
-            _GOOGLE_AVAILABLE = True
-            logger.info("Google API client libraries available after installation")
-            return
-        raise RuntimeError(
-            "Google API client libraries were installed but could not be imported. "
-            "Please restart the application or install them manually. "
-            "See Tools → Open Debug Log for installation details."
-        )
-
-    logger.warning("Google API client libraries still unavailable after previous installation attempt")
-    raise RuntimeError(
-        "Google API client libraries are required but could not be loaded automatically. "
-        "Please install 'google-api-python-client' and 'google-auth-oauthlib'. "
-        "See Tools → Open Debug Log for details."
-    )
+    warning = dependency_loader.dependency_warning()
+    logger.warning(warning)
+    return warning
 
 
 def _settings_path() -> Path:
@@ -323,18 +295,17 @@ def load_settings() -> Dict[str, object]:
     else:
         defaults["token_path"] = resolved_token_path
     secret_candidate = str(defaults.get("client_secret_path") or "")
-    if secret_candidate:
+    if not secret_candidate:
+        normalised_secret = _default_client_secret_path()
+    else:
         try:
             normalised_secret = _normalise_client_secret_path(secret_candidate)
         except FileNotFoundError:
             logger.warning("Configured client secret missing at %s; clearing", secret_candidate)
-            normalised_secret = ""
+            normalised_secret = _default_client_secret_path()
         except RuntimeError as exc:
             logger.error("Failed to store client secret: %s", exc)
             raise
-    else:
-        stored_secret = _credentials_storage_path()
-        normalised_secret = str(stored_secret) if stored_secret.exists() else ""
     if defaults.get("client_secret_path") != normalised_secret:
         defaults["client_secret_path"] = normalised_secret
         save_settings(defaults)
@@ -377,7 +348,9 @@ def _ensure_configured(settings: Dict[str, object]) -> None:
 
 
 def _create_service(settings: Dict[str, object]):
-    _ensure_google_dependencies_installed()
+    warning = _ensure_google_dependencies_installed()
+    if warning:
+        raise RuntimeError(warning)
     token_path = _ensure_token_directory(str(settings.get("token_path") or _default_token_path()))
     if settings.get("token_path") != token_path:
         settings["token_path"] = token_path
@@ -403,7 +376,9 @@ def _ensure_structure(service) -> Tuple[str, str, str]:
 def test_connection(candidate_settings: Dict[str, object]) -> Dict[str, str]:
     settings = load_settings()
     settings.update(candidate_settings)
-    _ensure_google_dependencies_installed()
+    warning = _ensure_google_dependencies_installed()
+    if warning:
+        raise RuntimeError(warning)
     _ensure_configured(settings)
     service = _create_service(settings)
     root_id, changelog_id, backups_id = _ensure_structure(service)
