@@ -10,20 +10,26 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
-
-import importlib
-import site
-import sys
-import sysconfig
+from typing import Dict, Optional, Tuple
 import tempfile
 from stat import S_IRUSR, S_IWUSR
 
 import db
-import dependency_loader
-from core import app_paths, drive_api
-from core.dependencies import DependencyManager
+from core import app_paths, deps_bootstrap, drive_api
 from core.hash import file_sha256
+
+logger = logging.getLogger(__name__)
+
+app_paths.ensure_app_structure()
+
+SECURITY_NOTE = (
+    "ÖNEMLİ: Paylaşılan servis hesabı anahtarları (private key/id) depolanırken "
+    "şifrelenmeli ya da dosya izinleri kısıtlanmalıdır. Anahtar GitHub’a asla "
+    "commit edilmemelidir. Halihazırda bir anahtar açık şekilde paylaşıldıysa "
+    "derhal rotate edilmelidir."
+)
+
+logger.warning(SECURITY_NOTE)
 
 DB_FILENAME = "rugbase.db"
 ROOT_FOLDER_ID = "1rM1Ev9BdY_hhNOTdJgaRwziomVmNrLfq"
@@ -33,29 +39,6 @@ SETTINGS_FILENAME = "drive_sync_settings.json"
 DEFAULT_POLL_INTERVAL = 30
 TOKEN_FILENAME = "token.json"
 CREDENTIALS_FILENAME = "service_account.json"
-GOOGLE_PIP_PACKAGES: Tuple[str, ...] = (
-    "google-api-python-client",
-    "google-auth",
-    "google-auth-oauthlib",
-)
-GOOGLE_IMPORT_NAMES: Tuple[str, ...] = (
-    "googleapiclient",
-    "google.auth",
-    "google.oauth2",
-    "google_auth_oauthlib",
-    "httplib2",
-)
-
-GOOGLE_IMPORT_TESTS: Tuple[str, ...] = (
-    "googleapiclient.discovery",
-    "googleapiclient.http",
-    "googleapiclient._auth",
-    "google.oauth2.service_account",
-    "google.auth.transport.requests",
-    "google_auth_oauthlib.flow",
-    "httplib2",
-)
-
 STATUS_CONNECTED = "connected"
 STATUS_OFFLINE = "offline"
 STATUS_REAUTHORISE = "reauthorize"
@@ -110,9 +93,7 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _default_token_path() -> str:
-    base_dir = app_paths.ensure_directory(app_paths.APP_DIR)
-    token_file = base_dir / TOKEN_FILENAME
-    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file = app_paths.tokens_path(TOKEN_FILENAME)
     return str(token_file)
 
 
@@ -138,8 +119,7 @@ def _ensure_token_directory(token_path: str) -> str:
 
 
 def _credentials_storage_path(filename: str = CREDENTIALS_FILENAME) -> Path:
-    base_dir = app_paths.ensure_directory(app_paths.APP_DIR)
-    destination = base_dir / filename
+    destination = app_paths.config_path(filename)
     destination.parent.mkdir(parents=True, exist_ok=True)
     return destination
 
@@ -180,135 +160,8 @@ def service_account_storage_path() -> str:
     return str(_credentials_storage_path())
 
 
-_GOOGLE_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
-
-app_paths.ensure_app_structure()
-
-
-def _iter_site_directories() -> Iterable[str]:
-    seen: set[str] = set()
-
-    def _yield(candidate: object) -> Iterable[str]:
-        if isinstance(candidate, str):
-            values = [candidate]
-        elif isinstance(candidate, (list, tuple)):
-            values = [value for value in candidate if isinstance(value, str)]
-        else:
-            return []
-        for value in values:
-            normalised = os.path.normpath(value)
-            if normalised and normalised not in seen:
-                seen.add(normalised)
-                yield normalised
-
-    try:
-        yield from _yield(site.getusersitepackages())
-    except (AttributeError, OSError):
-        pass
-    try:
-        yield from _yield(site.getsitepackages())
-    except (AttributeError, OSError):
-        pass
-    for key in ("purelib", "platlib"):
-        try:
-            yield from _yield(sysconfig.get_path(key))
-        except (AttributeError, ValueError):
-            continue
-    pythonpath = os.environ.get("PYTHONPATH", "")
-    if pythonpath:
-        for entry in pythonpath.split(os.pathsep):
-            yield from _yield(entry)
-
-
-def _refresh_site_packages() -> None:
-    """Ensure any newly installed site-packages directories are importable."""
-
-    normalised = lambda value: os.path.normcase(os.path.abspath(value))
-    before = {normalised(entry) for entry in sys.path}
-
-    for path in _iter_site_directories():
-        if not os.path.isdir(path):
-            continue
-        try:
-            site.addsitedir(path)
-        except Exception:  # pragma: no cover - defensive; addsitedir rarely fails
-            logger.debug("Failed to register site-packages directory: %s", path, exc_info=True)
-            continue
-
-    after = {normalised(entry) for entry in sys.path}
-    new_entries = [
-        entry
-        for entry in sys.path
-        if normalised(entry) in after - before
-    ]
-    if new_entries:
-        logger.debug("Added site-packages directories to sys.path: %s", new_entries)
-
-    importlib.invalidate_caches()
-
-
-def _google_import_available() -> bool:
-    try:  # pragma: no cover - environment dependent
-        import googleapiclient  # type: ignore  # noqa: F401
-        import google_auth_oauthlib  # type: ignore  # noqa: F401
-        import google.auth  # type: ignore  # noqa: F401
-    except ImportError as exc:
-        logger.debug("Google API import check failed: %s", exc, exc_info=True)
-        return False
-    return True
-
-
-def _ensure_google_dependencies_installed() -> Optional[str]:
-    global _GOOGLE_AVAILABLE
-
-    if _GOOGLE_AVAILABLE:
-        return None
-
-    DependencyManager.ensure_paths()
-    DependencyManager.add_to_sys_path()
-    app_paths.ensure_vendor_on_path()
-
-    missing = DependencyManager.verify_imports(GOOGLE_IMPORT_TESTS)
-    if not missing and DependencyManager.is_installed(GOOGLE_IMPORT_NAMES):
-        _GOOGLE_AVAILABLE = True
-        logger.debug("Google API client libraries already importable")
-        return None
-
-    if dependency_loader.google_dependencies_available() and not missing:
-        _GOOGLE_AVAILABLE = True
-        logger.debug("Google API client libraries detected via bundled vendor directory")
-        return None
-
-    success, _ = DependencyManager.pip_install(GOOGLE_PIP_PACKAGES)
-    if success:
-        missing_after = DependencyManager.verify_imports(GOOGLE_IMPORT_TESTS)
-        if not missing_after and DependencyManager.is_installed(GOOGLE_IMPORT_NAMES):
-            _GOOGLE_AVAILABLE = True
-            logger.info(
-                "Google API client libraries available at %s",
-                DependencyManager.install_target,
-            )
-            return None
-
-        message = (
-            "Google API libs kuruldu ama import edilemedi. Tools → Geliştirici Logu menüsünden"
-            " pydeps yolunu ve sys.path dizisini kontrol edin."
-        )
-        logger.error("%s Eksik modüller: %s", message, ", ".join(missing_after))
-        return message
-
-    message = (
-        "Google API libs kurulamadı. Sistem politikaları (AV/İzin) veya ağ kısıtlaması"
-        " olabilir. Manuel kurulum: Tools → Open Debug Log."
-    )
-    logger.error(message)
-    return message
-
-
 def _settings_path() -> Path:
-    return app_paths.data_path(SETTINGS_FILENAME)
+    return app_paths.config_path(SETTINGS_FILENAME)
 
 
 def _default_settings() -> Dict[str, object]:
@@ -401,9 +254,10 @@ def _ensure_configured(settings: Dict[str, object]) -> None:
 
 
 def _create_service(settings: Dict[str, object]):
-    warning = _ensure_google_dependencies_installed()
-    if warning:
-        raise RuntimeError(warning)
+    if not deps_bootstrap.ensure_google_deps():
+        raise RuntimeError(
+            "Google API bağımlılıkları yüklenemedi. Ayrıntılar için log kayıtlarını kontrol edin."
+        )
     token_path = _ensure_token_directory(str(settings.get("token_path") or _default_token_path()))
     if settings.get("token_path") != token_path:
         settings["token_path"] = token_path
@@ -430,9 +284,10 @@ def _ensure_structure(service) -> Tuple[str, str, str]:
 def test_connection(candidate_settings: Dict[str, object]) -> Dict[str, str]:
     settings = load_settings()
     settings.update(candidate_settings)
-    warning = _ensure_google_dependencies_installed()
-    if warning:
-        raise RuntimeError(warning)
+    if not deps_bootstrap.ensure_google_deps():
+        raise RuntimeError(
+            "Google API bağımlılıkları yüklenemedi. Ayrıntılar için log kayıtlarını kontrol edin."
+        )
     _ensure_configured(settings)
     service = _create_service(settings)
     root_id, changelog_id, backups_id = _ensure_structure(service)

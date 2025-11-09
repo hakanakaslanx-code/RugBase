@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import certifi
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
@@ -15,12 +16,15 @@ a = Analysis(
         ('core', 'core'),
         ('ui_item_card.py', '.'),
         ('ui_main.py', '.'),
+        ('resources/wheels', 'resources/wheels'),
+        (certifi.where(), 'certifi'),
     ],
     hiddenimports=[
         'googleapiclient',
         'googleapiclient.discovery',
         'googleapiclient.http',
         'googleapiclient._auth',
+        'google.auth',
         'google_auth_oauthlib.flow',
         'google.oauth2.service_account',
         'google.auth.transport.requests',
