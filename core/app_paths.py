@@ -29,7 +29,7 @@ CACHE_DIR: Path = APP_DIR / "cache"
 VENDOR_DIR: Path = APP_DIR / "vendor"
 BACKUP_DIR: Path = APP_DIR / "backups"
 LOG_DIR: Path = APP_DIR / "logs"
-DEPENDENCY_DIR: Path = APP_DIR / "site-packages"
+DEPENDENCY_DIR: Path = APP_DIR / "pydeps"
 
 
 def install_path(*parts: str) -> Path:

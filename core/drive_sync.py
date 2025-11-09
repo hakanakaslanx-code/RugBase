@@ -41,7 +41,19 @@ GOOGLE_PIP_PACKAGES: Tuple[str, ...] = (
 GOOGLE_IMPORT_NAMES: Tuple[str, ...] = (
     "googleapiclient",
     "google.auth",
+    "google.oauth2",
     "google_auth_oauthlib",
+    "httplib2",
+)
+
+GOOGLE_IMPORT_TESTS: Tuple[str, ...] = (
+    "googleapiclient.discovery",
+    "googleapiclient.http",
+    "googleapiclient._auth",
+    "google.oauth2.service_account",
+    "google.auth.transport.requests",
+    "google_auth_oauthlib.flow",
+    "httplib2",
 )
 
 STATUS_CONNECTED = "connected"
@@ -98,7 +110,8 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _default_token_path() -> str:
-    token_file = app_paths.oauth_path(TOKEN_FILENAME)
+    base_dir = app_paths.ensure_directory(app_paths.APP_DIR)
+    token_file = base_dir / TOKEN_FILENAME
     token_file.parent.mkdir(parents=True, exist_ok=True)
     return str(token_file)
 
@@ -125,7 +138,8 @@ def _ensure_token_directory(token_path: str) -> str:
 
 
 def _credentials_storage_path(filename: str = CREDENTIALS_FILENAME) -> Path:
-    destination = app_paths.oauth_path(filename)
+    base_dir = app_paths.ensure_directory(app_paths.APP_DIR)
+    destination = base_dir / filename
     destination.parent.mkdir(parents=True, exist_ok=True)
     return destination
 
@@ -256,18 +270,34 @@ def _ensure_google_dependencies_installed() -> Optional[str]:
     DependencyManager.add_to_sys_path()
     app_paths.ensure_vendor_on_path()
 
-    if dependency_loader.google_dependencies_available() or DependencyManager.is_installed(
-        GOOGLE_IMPORT_NAMES
-    ):
+    missing = DependencyManager.verify_imports(GOOGLE_IMPORT_TESTS)
+    if not missing and DependencyManager.is_installed(GOOGLE_IMPORT_NAMES):
         _GOOGLE_AVAILABLE = True
-        logger.debug("Google API client libraries detected without installation")
+        logger.debug("Google API client libraries already importable")
+        return None
+
+    if dependency_loader.google_dependencies_available() and not missing:
+        _GOOGLE_AVAILABLE = True
+        logger.debug("Google API client libraries detected via bundled vendor directory")
         return None
 
     success, _ = DependencyManager.pip_install(GOOGLE_PIP_PACKAGES)
-    if success and DependencyManager.is_installed(GOOGLE_IMPORT_NAMES):
-        _GOOGLE_AVAILABLE = True
-        logger.debug("Google API client libraries installed successfully")
-        return None
+    if success:
+        missing_after = DependencyManager.verify_imports(GOOGLE_IMPORT_TESTS)
+        if not missing_after and DependencyManager.is_installed(GOOGLE_IMPORT_NAMES):
+            _GOOGLE_AVAILABLE = True
+            logger.info(
+                "Google API client libraries available at %s",
+                DependencyManager.install_target,
+            )
+            return None
+
+        message = (
+            "Google API libs kuruldu ama import edilemedi. Tools → Geliştirici Logu menüsünden"
+            " pydeps yolunu ve sys.path dizisini kontrol edin."
+        )
+        logger.error("%s Eksik modüller: %s", message, ", ".join(missing_after))
+        return message
 
     message = (
         "Google API libs kurulamadı. Sistem politikaları (AV/İzin) veya ağ kısıtlaması"
@@ -385,7 +415,8 @@ def _create_service(settings: Dict[str, object]):
             drive_api.DEFAULT_SCOPES,
         )
     except drive_api.AuthenticationError as exc:
-        raise SyncAuthenticationRequired(str(exc)) from exc
+        message = f"{exc}. Anahtarları rotasyon yapın."
+        raise SyncAuthenticationRequired(message) from exc
 
 
 def _ensure_structure(service) -> Tuple[str, str, str]:

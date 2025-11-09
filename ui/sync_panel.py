@@ -120,9 +120,9 @@ class SyncPanel(ttk.Frame):
         ttk.Label(form, text="Servis hesabı e-postası").grid(
             row=1, column=0, sticky=tk.W, pady=6
         )
-        ttk.Entry(
-            form, textvariable=self.service_email_var, state="readonly"
-        ).grid(row=1, column=1, sticky="ew", pady=6)
+        ttk.Entry(form, textvariable=self.service_email_var).grid(
+            row=1, column=1, sticky="ew", pady=6
+        )
 
         ttk.Label(form, text="Çalışma sayfası adı").grid(row=2, column=0, sticky=tk.W, pady=6)
         self.worksheet_entry = ttk.Entry(form, textvariable=self.worksheet_var)
@@ -292,12 +292,20 @@ class SyncPanel(ttk.Frame):
     def _task_test_connection(self) -> None:
         try:
             settings = self._collect_settings()
-            self._service.test_connection(settings)
+            report = self._service.test_connection(settings)
         except SheetsSyncError as exc:
             self._post_log(f"Bağlantı testi başarısız: {exc}")
             self._connection_ready = False
             self._post_metadata_hint("")
         else:
+            for key in ("imports", "values_get", "roundtrip"):
+                if report.get(key):
+                    self._post_log(report[key])
+            extra_keys = [
+                key for key in report.keys() if key not in {"imports", "values_get", "roundtrip"}
+            ]
+            for key in sorted(extra_keys):
+                self._post_log(report[key])
             self._post_log("Bağlantı testi başarılı.")
             self._connection_ready = True
             hint = self._compute_metadata_hint(settings)

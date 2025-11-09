@@ -56,6 +56,10 @@ class CredentialsFileNotFoundError(SheetsSyncError):
     """Raised when the configured credentials file cannot be located."""
 
 
+class CredentialsFileInvalidError(SheetsSyncError):
+    """Raised when the configured credentials file is invalid."""
+
+
 class SpreadsheetAccessError(SheetsSyncError):
     """Raised when the Google Sheets API returns an error."""
 
@@ -101,9 +105,14 @@ def get_client(credentials_path: str):
     if not path.exists():
         raise CredentialsFileNotFoundError(f"Kimlik dosyası bulunamadı: {path}")
 
-    credentials = service_account.Credentials.from_service_account_file(  # type: ignore[union-attr]
-        str(path), scopes=SCOPES
-    )
+    try:
+        credentials = service_account.Credentials.from_service_account_file(  # type: ignore[union-attr]
+            str(path), scopes=SCOPES
+        )
+    except ValueError as exc:
+        raise CredentialsFileInvalidError(
+            "Kimlik dosyası okunamadı. Anahtarları rotasyon yapın."
+        ) from exc
     return build("sheets", "v4", credentials=credentials, cache_discovery=False)  # type: ignore[call-arg]
 
 
