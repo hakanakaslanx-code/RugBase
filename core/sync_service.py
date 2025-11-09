@@ -123,12 +123,63 @@ class SyncService:
     # ------------------------------------------------------------------
     # Public operations
     # ------------------------------------------------------------------
-    def test_connection(self, settings: GoogleSyncSettings) -> None:
+    def test_connection(self, settings: GoogleSyncSettings) -> Dict[str, str]:
         """Ensure that credentials and spreadsheet access are valid."""
+
+        report: Dict[str, str] = {}
+
+        if not sheets_sync.is_api_available():
+            raise sheets_sync.MissingDependencyError(
+                "google-api-python-client bulunamadı. Tools → Geliştirici Logu üzerinden"
+                " pydeps klasörünü doğrulayın."
+            )
+
+        missing_imports = []
+        for dotted_path in (
+            "googleapiclient.discovery",
+            "googleapiclient.http",
+            "google.oauth2.service_account",
+            "google_auth_oauthlib.flow",
+        ):
+            try:
+                __import__(dotted_path)
+            except ImportError as exc:
+                missing_imports.append(f"{dotted_path}: {exc}")
+
+        if missing_imports:
+            raise sheets_sync.MissingDependencyError(
+                "Google API import testi başarısız: " + "; ".join(missing_imports)
+            )
+
+        report["imports"] = "Google API kütüphaneleri başarıyla yüklendi."
 
         client = sheets_sync.get_client(settings.credential_path)
         sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+
+        sheet_title = settings.worksheet_title or sheets_sync.DEFAULT_WORKSHEET_TITLE
+        try:
+            result = (
+                client.spreadsheets()
+                .values()
+                .get(
+                    spreadsheetId=sheets_sync.parse_spreadsheet_id(settings.spreadsheet_id),
+                    range=f"{sheet_title}!A1",
+                )
+                .execute()
+            )
+        except sheets_sync.HttpError as exc:  # type: ignore[attr-defined]
+            raise sheets_sync.SpreadsheetAccessError(
+                f"Sheets 'values.get' testi başarısız: {exc}"
+            ) from exc
+
+        values = result.get("values", []) if isinstance(result, dict) else []
+        first_value = values[0][0] if values and values[0] else ""
+        report["values_get"] = f"A1 hücresi okundu: '{first_value}'."
+
         sheets_sync.verify_roundtrip(client, settings.spreadsheet_id, settings.worksheet_title)
+        report["roundtrip"] = "Sheets yaz/oku doğrulaması tamamlandı."
+
+        return report
 
     def get_local_metadata(self) -> Dict[str, str]:
         """Return metadata for the local database file."""

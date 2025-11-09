@@ -7,7 +7,7 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, Sequence, Tuple
+from typing import Iterable, List, Sequence, Tuple
 
 from core import app_paths
 
@@ -27,6 +27,7 @@ class DependencyManager:
 
         app_paths.ensure_directory(cls.install_target)
         app_paths.ensure_directory(cls.log_directory)
+        logger.info("Dependency target directory: %s", cls.install_target)
 
     @classmethod
     def add_to_sys_path(cls) -> bool:
@@ -44,6 +45,21 @@ class DependencyManager:
             logger.debug("Dependency target already present on sys.path: %s", target)
         logger.info("sys.path snapshot after dependency setup:\n%s", "\n".join(sys.path))
         return True
+
+    @staticmethod
+    def verify_imports(modules: Iterable[str]) -> List[str]:
+        """Return a list of modules that could not be imported."""
+
+        missing: List[str] = []
+        for dotted_path in modules:
+            if not dotted_path:
+                continue
+            try:
+                importlib.import_module(dotted_path)
+            except ImportError as exc:
+                logger.debug("Import check failed for %s: %s", dotted_path, exc, exc_info=True)
+                missing.append(dotted_path)
+        return missing
 
     @staticmethod
     def is_installed(packages: Iterable[str]) -> bool:
@@ -78,7 +94,7 @@ class DependencyManager:
             "--no-input",
             "--disable-pip-version-check",
             "--no-color",
-            "--only-binary=:all:",
+            "--no-warn-script-location",
             "--target",
             str(cls.install_target),
             *filtered,

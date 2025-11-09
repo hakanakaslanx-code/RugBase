@@ -1,6 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
+
+google_hidden = collect_submodules('googleapiclient') + collect_submodules('google')
 
 
 a = Analysis(
@@ -16,9 +20,12 @@ a = Analysis(
         'googleapiclient',
         'googleapiclient.discovery',
         'googleapiclient.http',
+        'googleapiclient._auth',
         'google_auth_oauthlib.flow',
         'google.oauth2.service_account',
+        'google.auth.transport.requests',
         'httplib2',
+        *google_hidden,
     ],
     hookspath=[],
     hooksconfig={},
