@@ -1,3 +1,4 @@
+import getpass
 import json
 import logging
 import os
@@ -50,6 +51,21 @@ logger = logging.getLogger(__name__)
 
 _ITEM_UPSERT_LISTENERS: List[Callable[[str], None]] = []
 _ITEM_UPSERT_LISTENERS_LOCK = threading.Lock()
+
+
+def _default_updated_by() -> str:
+    for env_var in ("RUGBASE_USER", "USERNAME", "USER"):
+        value = os.getenv(env_var)
+        if value:
+            return value
+    try:
+        return getpass.getuser()
+    except Exception:  # pragma: no cover - platform dependent
+        return "local"
+
+
+def _ensure_rb_id(value: Optional[str]) -> str:
+    return value or str(uuid.uuid4())
 
 
 def add_item_upsert_listener(listener: Callable[[str], None]) -> None:
@@ -130,6 +146,17 @@ CREATE TABLE IF NOT EXISTS processed_stock_txns (
 """
 
 
+SYNC_QUEUE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS sync_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rb_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    retries INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+
 MASTER_SHEET_COLUMNS: List[Tuple[str, str]] = [
     ("rug_no", "RugNo"),
     ("upc", "UPC"),
@@ -164,6 +191,7 @@ NUMERIC_FIELDS = {"area", "sp", "cost"}
 
 TABLE_COLUMNS: List[Tuple[str, str]] = [
     ("item_id", "TEXT PRIMARY KEY"),
+    ("rb_id", "TEXT UNIQUE"),
     *[
         (field, "REAL" if field in NUMERIC_FIELDS else "TEXT")
         for field in MASTER_SHEET_FIELDS
@@ -171,7 +199,9 @@ TABLE_COLUMNS: List[Tuple[str, str]] = [
     ("qty", "INTEGER DEFAULT 0"),
     ("created_at", "TEXT"),
     ("updated_at", "TEXT"),
-    ("version", "INTEGER DEFAULT 1"),
+    ("updated_by", "TEXT"),
+    ("version", "INTEGER DEFAULT 0"),
+    ("last_pushed_version", "INTEGER DEFAULT 0"),
     ("status", "TEXT DEFAULT 'in_stock'"),
     ("location", "TEXT DEFAULT 'warehouse'"),
     ("consignment_id", "INTEGER"),
@@ -290,16 +320,39 @@ def initialize_database() -> None:
         conn.execute(PROCESSED_CHANGES_TABLE_SQL)
         conn.execute(CONFLICTS_TABLE_SQL)
         conn.execute(PROCESSED_STOCK_TXN_TABLE_SQL)
+        conn.execute(SYNC_QUEUE_TABLE_SQL)
         _ensure_columns(conn)
         cursor = conn.execute("SELECT COUNT(*) FROM item")
         count = cursor.fetchone()[0]
         if count == 0:
-            insert_fields = ["item_id", *MASTER_SHEET_FIELDS]
+            insert_fields = [
+                "item_id",
+                "rb_id",
+                *MASTER_SHEET_FIELDS,
+                "qty",
+                "created_at",
+                "updated_at",
+                "updated_by",
+                "version",
+                "last_pushed_version",
+            ]
             placeholders = ", ".join(f":{field}" for field in insert_fields)
             insert_item_sql = (
                 f"INSERT INTO item ({', '.join(insert_fields)}) VALUES ({placeholders})"
             )
-            conn.executemany(insert_item_sql, SAMPLE_ITEMS)
+            now = _now_iso()
+            seed_rows: List[Dict[str, Any]] = []
+            for index, sample in enumerate(SAMPLE_ITEMS, start=1):
+                record = dict(sample)
+                record.setdefault("rb_id", f"sample-{index:03d}")
+                record.setdefault("qty", 0)
+                record.setdefault("created_at", now)
+                record.setdefault("updated_at", now)
+                record.setdefault("updated_by", _default_updated_by())
+                record.setdefault("version", 0)
+                record.setdefault("last_pushed_version", 0)
+                seed_rows.append(record)
+            conn.executemany(insert_item_sql, seed_rows)
             conn.commit()
 
     from consignment_repo import migrate
@@ -313,7 +366,17 @@ def fetch_items(
     brand_filter: Optional[str] = None,
     style_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
+    select_fields = [
+        "item_id",
+        "rb_id",
+        *MASTER_SHEET_FIELDS,
+        "qty",
+        "created_at",
+        "updated_at",
+        "updated_by",
+        "version",
+        "last_pushed_version",
+    ]
     query = f"SELECT {', '.join(select_fields)} FROM item"
     filters = ["COALESCE(status, 'in_stock') != 'deleted'"]
     params: List[Any] = []
@@ -350,7 +413,17 @@ def search_items_for_labels(
     size: Optional[str] = None,
     origin: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
+    select_fields = [
+        "item_id",
+        "rb_id",
+        *MASTER_SHEET_FIELDS,
+        "qty",
+        "created_at",
+        "updated_at",
+        "updated_by",
+        "version",
+        "last_pushed_version",
+    ]
     query = f"SELECT {', '.join(select_fields)} FROM item"
     filters: List[str] = ["COALESCE(status, 'in_stock') != 'deleted'"]
     params: List[Any] = []
@@ -396,7 +469,17 @@ def fetch_distinct_values(field: str) -> List[str]:
 
 
 def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
-    select_fields = ["item_id", *MASTER_SHEET_FIELDS, "created_at", "updated_at"]
+    select_fields = [
+        "item_id",
+        "rb_id",
+        *MASTER_SHEET_FIELDS,
+        "qty",
+        "created_at",
+        "updated_at",
+        "updated_by",
+        "version",
+        "last_pushed_version",
+    ]
     query = f"SELECT {', '.join(select_fields)} FROM item WHERE item_id = ?"
 
     with get_connection() as conn:
@@ -409,12 +492,13 @@ def update_item(item_data: Dict[str, Any]) -> None:
     set_clause = ", ".join(f"{field} = ?" for field in UPDATABLE_FIELDS)
     params = [item_data.get(field) for field in UPDATABLE_FIELDS]
     now = _now_iso()
-    params.extend([now, item_data["item_id"]])
+    updated_by = item_data.get("updated_by") or _default_updated_by()
+    params.extend([now, updated_by, item_data["item_id"]])
 
     with get_connection() as conn:
         conn.execute(
-            f"UPDATE item SET {set_clause}, updated_at = ?, version = COALESCE(version, 0) + 1 "
-            "WHERE item_id = ?",
+            f"UPDATE item SET {set_clause}, updated_at = ?, updated_by = ?, "
+            "version = COALESCE(version, 0) + 1 WHERE item_id = ?",
             params,
         )
         conn.commit()
@@ -466,10 +550,11 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
 
             params = [merged_data.get(field) for field in updatable_fields]
             now = _now_iso()
-            params.extend([now, item_id])
+            updated_by = item_data.get("updated_by") or _default_updated_by()
+            params.extend([now, updated_by, item_id])
             conn.execute(
-                f"UPDATE item SET {set_clause}, updated_at = ?, version = COALESCE(version, 0) + 1 "
-                "WHERE item_id = ?",
+                f"UPDATE item SET {set_clause}, updated_at = ?, updated_by = ?, "
+                "version = COALESCE(version, 0) + 1 WHERE item_id = ?",
                 params,
             )
             conn.commit()
@@ -477,15 +562,30 @@ def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
             return item_id, False
 
         new_item_id = item_data.get("item_id") or str(uuid.uuid4())
+        rb_id = _ensure_rb_id(item_data.get("rb_id"))
         now = _now_iso()
-        insert_fields = ["item_id"] + updatable_fields + ["qty", "created_at", "updated_at", "version"]
+        updated_by = item_data.get("updated_by") or _default_updated_by()
+        insert_fields = [
+            "item_id",
+            "rb_id",
+            *updatable_fields,
+            "qty",
+            "created_at",
+            "updated_at",
+            "updated_by",
+            "version",
+            "last_pushed_version",
+        ]
         insert_values = [
             new_item_id,
+            rb_id,
             *[item_data.get(field) for field in updatable_fields],
             item_data.get("qty", 0),
             now,
             now,
-            1,
+            updated_by,
+            0,
+            0,
         ]
         placeholders = ", ".join("?" for _ in insert_fields)
         conn.execute(
@@ -501,15 +601,30 @@ def insert_item(item_data: Dict[str, Any]) -> str:
     """Insert a new item into the database and return its identifier."""
 
     item_id = item_data.get("item_id") or str(uuid.uuid4())
+    rb_id = _ensure_rb_id(item_data.get("rb_id"))
     now = _now_iso()
-    insert_fields = ["item_id", *UPDATABLE_FIELDS, "qty", "created_at", "updated_at", "version"]
+    updated_by = item_data.get("updated_by") or _default_updated_by()
+    insert_fields = [
+        "item_id",
+        "rb_id",
+        *UPDATABLE_FIELDS,
+        "qty",
+        "created_at",
+        "updated_at",
+        "updated_by",
+        "version",
+        "last_pushed_version",
+    ]
     insert_values = [
         item_id,
+        rb_id,
         *[item_data.get(field) for field in UPDATABLE_FIELDS],
         item_data.get("qty", 0),
         now,
         now,
-        1,
+        updated_by,
+        0,
+        0,
     ]
     placeholders = ", ".join("?" for _ in insert_fields)
 
@@ -661,10 +776,11 @@ def bump_item_version(item_id: str) -> None:
     """Increment an item's version and touch the update timestamp."""
 
     now = _now_iso()
+    updated_by = _default_updated_by()
     with get_connection() as conn:
         conn.execute(
-            "UPDATE item SET version = COALESCE(version, 0) + 1, updated_at = ? WHERE item_id = ?",
-            (now, item_id),
+            "UPDATE item SET version = COALESCE(version, 0) + 1, updated_at = ?, updated_by = ? WHERE item_id = ?",
+            (now, updated_by, item_id),
         )
         conn.commit()
 
@@ -715,6 +831,59 @@ def record_processed_change(change_file: str, applied_at: Optional[str] = None) 
         conn.execute(
             "INSERT OR REPLACE INTO processed_changes (change_file, applied_at) VALUES (?, ?)",
             (change_file, timestamp),
+        )
+        conn.commit()
+
+
+def enqueue_sync_job(rb_id: str, payload: Dict[str, Any]) -> int:
+    serialized = json.dumps(payload, ensure_ascii=False)
+    now = _now_iso()
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO sync_queue (rb_id, payload, created_at) VALUES (?, ?, ?)",
+            (rb_id, serialized, now),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def fetch_sync_queue(limit: int = 100) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "SELECT id, rb_id, payload, retries, created_at FROM sync_queue ORDER BY id LIMIT ?",
+            (limit,),
+        )
+        entries: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            payload: Dict[str, Any]
+            try:
+                payload = json.loads(row["payload"])
+            except json.JSONDecodeError:
+                payload = {}
+            entries.append(
+                {
+                    "id": int(row["id"]),
+                    "rb_id": row["rb_id"],
+                    "payload": payload,
+                    "retries": int(row["retries"]),
+                    "created_at": row["created_at"],
+                }
+            )
+        return entries
+
+
+def delete_sync_job(job_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM sync_queue WHERE id = ?", (job_id,))
+        conn.commit()
+
+
+def increment_sync_retry(job_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE sync_queue SET retries = retries + 1, created_at = ? WHERE id = ?",
+            (_now_iso(), job_id),
         )
         conn.commit()
 
@@ -871,5 +1040,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     now = _now_iso()
     conn.execute("UPDATE item SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now,))
     conn.execute("UPDATE item SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''", (now,))
-    conn.execute("UPDATE item SET version = COALESCE(NULLIF(version, 0), 1)")
+    conn.execute("UPDATE item SET updated_by = COALESCE(NULLIF(updated_by, ''), ?)", (_default_updated_by(),))
+    conn.execute("UPDATE item SET version = COALESCE(version, 0)")
+    conn.execute("UPDATE item SET last_pushed_version = COALESCE(last_pushed_version, 0)")
+
+    cursor = conn.execute("SELECT item_id, rb_id FROM item")
+    for row in cursor.fetchall():
+        if not row[1]:
+            conn.execute("UPDATE item SET rb_id = ? WHERE item_id = ?", (str(uuid.uuid4()), row[0]))
     conn.commit()
