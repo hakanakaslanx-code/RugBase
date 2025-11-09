@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from core import sheets_sync
 from core.sync_service import SyncService
 from core.sheets_sync import SheetsSyncError
+from dependency_loader import dependency_warning
 from settings import (
     DEFAULT_CREDENTIALS_PATH,
     DEFAULT_SERVICE_ACCOUNT_EMAIL,
@@ -91,9 +92,9 @@ class SyncPanel(ttk.Frame):
         if sheets_sync.is_api_available() and self._credentials_exist():
             self.after(750, self._initial_test_connection)
         elif not sheets_sync.is_api_available():
-            self._append_log(
-                "google-api-python-client bulunamadı. Senkronizasyon özellikleri devre dışı bırakıldı."
-            )
+            warning = dependency_warning()
+            self._append_log(warning)
+            self.metadata_hint_var.set(warning)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -574,6 +575,10 @@ class SyncPanel(ttk.Frame):
             self.auto_button.config(
                 text="Auto Sync'i Durdur" if self._auto_sync_enabled else "Eşitle (Auto Sync)"
             )
+
+        if not api_available:
+            warning = dependency_warning()
+            self.metadata_hint_var.set(warning)
 
     def _initial_test_connection(self) -> None:
         self._on_test_connection()

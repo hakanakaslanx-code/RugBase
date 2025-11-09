@@ -44,24 +44,30 @@ def _install_requirements(project_dir: pathlib.Path) -> None:
     )
 
 
-def _ensure_google_dependencies(project_dir: pathlib.Path) -> None:
-    if _check_google_dependencies():
-        return
-
+def _prepare_google_dependencies(project_dir: pathlib.Path) -> None:
     try:
         _install_requirements(project_dir)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(
-            "Google bağımlılıkları otomatik olarak yüklenemedi. 'pip install -r requirements.txt' komutunu manuel çalıştırın."
+            "Google bağımlılıkları yüklenemedi. 'pip install -r requirements.txt' komutunu manuel çalıştırın."
         ) from exc
 
     if not _check_google_dependencies():
-        raise SystemExit(
-            "Google bağımlılıkları import edilemedi. 'pip install -r requirements.txt' çalıştırın."
+        print(
+            "Uyarı: Google API bağımlılıkları import edilemedi. Paketleme devam edecek ancak"
+            " çalışma zamanında senkron özellikleri devre dışı kalabilir.",
+            file=sys.stderr,
         )
 
 
 def run() -> None:
+    project_dir = pathlib.Path(__file__).resolve().parent
+    entry_point = project_dir / "app.py"
+
+    data_sep = os.pathsep
+
+    _prepare_google_dependencies(project_dir)
+
     try:
         import PyInstaller.__main__  # type: ignore
     except ModuleNotFoundError:  # pragma: no cover - runtime guard
@@ -72,13 +78,6 @@ def run() -> None:
                 "PyInstaller is required to build the executable and could not be installed automatically."
             ) from install_exc
         import PyInstaller.__main__  # type: ignore
-
-    project_dir = pathlib.Path(__file__).resolve().parent
-    entry_point = project_dir / "app.py"
-
-    data_sep = os.pathsep
-
-    _ensure_google_dependencies(project_dir)
 
     args = [
         "--name=RugBase",
