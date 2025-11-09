@@ -68,12 +68,15 @@ class MainWindow:
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
         self.style = ttk.Style(self.root)
+        self.dark_mode_var = tk.BooleanVar(value=False)
+        self._palette: dict[str, str] = {}
         self._configure_style()
         self._create_widgets()
         self.load_items()
         self.root.bind("<Control-l>", self.on_open_label_generator)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.minsize(1024, 640)
+        self._apply_theme()
 
     def _configure_style(self) -> None:
         try:
@@ -81,9 +84,180 @@ class MainWindow:
         except tk.TclError:
             pass
         self.style.configure("Header.TLabel", font=("Segoe UI", 18, "bold"))
-        self.style.configure("SubHeader.TLabel", font=("Segoe UI", 10), foreground="#555555")
+        self.style.configure("SubHeader.TLabel", font=("Segoe UI", 10))
         self.style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
         self.style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+
+    def _light_palette(self) -> dict[str, str]:
+        return {
+            "background": "#f5f7fb",
+            "frame": "#ffffff",
+            "foreground": "#1f2933",
+            "subtext": "#4b5563",
+            "accent": "#2563eb",
+            "accent_text": "#ffffff",
+            "accent_hover": "#3b82f6",
+            "accent_pressed": "#1d4ed8",
+            "selection": "#2563eb",
+            "selection_text": "#ffffff",
+            "tree_background": "#ffffff",
+            "border": "#d1d5db",
+            "button_hover": "#e5e7eb",
+            "button_pressed": "#d1d5db",
+            "entry": "#ffffff",
+            "disabled_bg": "#e5e7eb",
+            "disabled_fg": "#9ca3af",
+            "warning": "#b91c1c",
+        }
+
+    def _dark_palette(self) -> dict[str, str]:
+        return {
+            "background": "#1f1f24",
+            "frame": "#2b2f3a",
+            "foreground": "#f3f4f6",
+            "subtext": "#9ca3af",
+            "accent": "#3b82f6",
+            "accent_text": "#f8fafc",
+            "accent_hover": "#60a5fa",
+            "accent_pressed": "#2563eb",
+            "selection": "#3b82f6",
+            "selection_text": "#f8fafc",
+            "tree_background": "#1f2937",
+            "border": "#3f3f46",
+            "button_hover": "#3f3f46",
+            "button_pressed": "#1f2933",
+            "entry": "#111827",
+            "disabled_bg": "#2f313d",
+            "disabled_fg": "#6b7280",
+            "warning": "#f87171",
+        }
+
+    def _toggle_dark_mode(self) -> None:
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        palette = self._dark_palette() if self.dark_mode_var.get() else self._light_palette()
+        self._palette = palette
+
+        self.root.configure(bg=palette["background"])
+
+        self.style.configure("TFrame", background=palette["background"])
+        self.style.configure(
+            "TLabelframe",
+            background=palette["frame"],
+            bordercolor=palette["border"],
+            relief="solid",
+        )
+        self.style.configure(
+            "TLabelframe.Label",
+            background=palette["frame"],
+            foreground=palette["foreground"],
+        )
+        self.style.configure("TLabel", background=palette["background"], foreground=palette["foreground"])
+        self.style.configure("Header.TLabel", background=palette["background"], foreground=palette["foreground"])
+        self.style.configure("SubHeader.TLabel", background=palette["background"], foreground=palette["subtext"])
+        self.style.configure("Hint.TLabel", background=palette["background"], foreground=palette["subtext"])
+        self.style.configure("CardHint.TLabel", background=palette["frame"], foreground=palette["subtext"])
+        self.style.configure("Info.TLabel", background=palette["frame"], foreground=palette["accent"])
+        self.style.configure("Warning.TLabel", background=palette["frame"], foreground=palette["warning"])
+        self.style.configure("TNotebook", background=palette["background"], bordercolor=palette["border"])
+        self.style.configure(
+            "TNotebook.Tab",
+            background=palette["frame"],
+            foreground=palette["subtext"],
+            bordercolor=palette["border"],
+        )
+        self.style.map(
+            "TNotebook.Tab",
+            background=[("selected", palette["background"])],
+            foreground=[("selected", palette["foreground"])],
+        )
+        self.style.configure(
+            "Treeview",
+            background=palette["tree_background"],
+            fieldbackground=palette["tree_background"],
+            foreground=palette["foreground"],
+            bordercolor=palette["border"],
+            rowheight=24,
+        )
+        self.style.configure(
+            "Treeview.Heading",
+            background=palette["frame"],
+            foreground=palette["foreground"],
+            bordercolor=palette["border"],
+        )
+        self.style.map(
+            "Treeview",
+            background=[("selected", palette["selection"])],
+            foreground=[("selected", palette["selection_text"])],
+        )
+        self.style.configure(
+            "TButton",
+            background=palette["frame"],
+            foreground=palette["foreground"],
+            bordercolor=palette["border"],
+        )
+        self.style.map(
+            "TButton",
+            background=[("active", palette["button_hover"]), ("pressed", palette["button_pressed"])],
+        )
+        self.style.configure(
+            "Accent.TButton",
+            background=palette["accent"],
+            foreground=palette["accent_text"],
+            bordercolor=palette["accent_pressed"],
+        )
+        self.style.map(
+            "Accent.TButton",
+            background=[("active", palette["accent_hover"]), ("pressed", palette["accent_pressed"])],
+        )
+        self.style.configure(
+            "TEntry",
+            fieldbackground=palette["entry"],
+            foreground=palette["foreground"],
+            bordercolor=palette["border"],
+        )
+        self.style.map(
+            "TEntry",
+            fieldbackground=[("disabled", palette["disabled_bg"])],
+            foreground=[("disabled", palette["disabled_fg"])],
+        )
+        self.style.configure(
+            "TCombobox",
+            fieldbackground=palette["entry"],
+            foreground=palette["foreground"],
+            bordercolor=palette["border"],
+            arrowcolor=palette["foreground"],
+        )
+        self.style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", palette["entry"])],
+            foreground=[("readonly", palette["foreground"])],
+        )
+        self.style.configure(
+            "Vertical.TScrollbar",
+            background=palette["frame"],
+            troughcolor=palette["background"],
+            bordercolor=palette["border"],
+        )
+        self.style.configure(
+            "Horizontal.TScrollbar",
+            background=palette["frame"],
+            troughcolor=palette["background"],
+            bordercolor=palette["border"],
+        )
+
+        if hasattr(self, "dashboard_container"):
+            self.dashboard_container._canvas.configure(
+                background=palette["background"],
+                highlightbackground=palette["border"],
+            )
+
+        if hasattr(self, "sync_panel"):
+            self.sync_panel.apply_theme(palette)
+
+        if self.label_window and self.label_window.window.winfo_exists():
+            self.label_window.apply_theme(palette)
 
     def _create_widgets(self) -> None:
         self._build_menu()
@@ -174,7 +348,7 @@ class MainWindow:
                 "Google Drive senkronizasyonu kaldırıldı."
                 " Excel/Sheets senkronizasyonunu kullanmak için Sync sekmesine geçebilirsiniz."
             ),
-            foreground="#555555",
+            style="Hint.TLabel",
             wraplength=720,
             justify=tk.LEFT,
         ).pack(fill=tk.X, pady=(0, 10))
@@ -309,6 +483,7 @@ class MainWindow:
             self.label_window.window.focus_set()
             return
         self.label_window = LabelGeneratorWindow(self.root, on_close=self._clear_label_window)
+        self.label_window.apply_theme(self._palette)
 
     def on_open_label_generator(self, _event: tk.Event) -> None:
         self.open_label_generator()
@@ -501,6 +676,12 @@ class MainWindow:
         tools_menu = tk.Menu(menubar, tearoff=0)
         tools_menu.add_command(label="Open Debug Log", command=self.open_debug_log)
         tools_menu.add_command(label="Open Data Folder", command=self.open_data_folder)
+        tools_menu.add_separator()
+        tools_menu.add_checkbutton(
+            label="Enable Night Mode",
+            variable=self.dark_mode_var,
+            command=self._toggle_dark_mode,
+        )
         menubar.add_cascade(label="Tools", menu=tools_menu)
         self.root.config(menu=menubar)
 
@@ -516,10 +697,12 @@ class MainWindow:
             messagebox.showerror("Debug Log", f"Unable to read log file: {exc}", parent=self.root)
             return
 
+        palette = self._palette or self._light_palette()
         window = tk.Toplevel(self.root)
         window.title("RugBase Debug Log")
         window.geometry("720x480")
         window.transient(self.root)
+        window.configure(bg=palette["background"])
 
         text_widget = tk.Text(window, wrap="none")
         text_widget.insert("1.0", content or "(Log file is empty)")
@@ -527,7 +710,17 @@ class MainWindow:
             fixed_font = tkfont.nametofont("TkFixedFont")
         except tk.TclError:
             fixed_font = ("Consolas", 10)
-        text_widget.configure(state="disabled", font=fixed_font)
+        text_widget.configure(
+            state="disabled",
+            font=fixed_font,
+            background=palette["frame"],
+            foreground=palette["foreground"],
+            highlightbackground=palette["border"],
+            highlightcolor=palette["border"],
+            selectbackground=palette["selection"],
+            selectforeground=palette["selection_text"],
+            insertbackground=palette["foreground"],
+        )
 
         yscroll = ttk.Scrollbar(window, orient="vertical", command=text_widget.yview)
         xscroll = ttk.Scrollbar(window, orient="horizontal", command=text_widget.xview)
@@ -540,7 +733,7 @@ class MainWindow:
         window.rowconfigure(0, weight=1)
         window.columnconfigure(0, weight=1)
 
-        ttk.Label(window, text=str(log_path), foreground="#555555").grid(
+        ttk.Label(window, text=str(log_path), style="Hint.TLabel").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 10)
         )
 

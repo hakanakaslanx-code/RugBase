@@ -148,7 +148,7 @@ class LabelGeneratorWindow:
         self.warning_label = ttk.Label(
             preview_frame,
             textvariable=self.warning_var,
-            foreground="#a94442",
+            style="Warning.TLabel",
             wraplength=360,
         )
         self.warning_label.pack(fill=tk.X, pady=(6, 0))
@@ -365,6 +365,9 @@ class LabelGeneratorWindow:
             messagebox.showwarning(title, f"{message}\n\nWarnings:\n- " + "\n- ".join(warnings))
         else:
             messagebox.showinfo(title, message)
+
+    def apply_theme(self, palette: Dict[str, str]) -> None:
+        self.window.configure(bg=palette["background"])
 
     def close(self) -> None:
         if self.window.winfo_exists():
