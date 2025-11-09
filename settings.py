@@ -1,9 +1,12 @@
+"""Application configuration helpers for RugBase."""
+from __future__ import annotations
+
 import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass
-from typing import Dict, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Mapping, Optional
 
 import db
 import dependency_loader
@@ -110,11 +113,37 @@ class DymoLabelSettings:
 
 
 @dataclass
+class ColumnMapping:
+    """Represents a database → sheet column mapping entry."""
+
+    field: str
+    header: str
+
+
+@dataclass
 class GoogleSyncSettings:
     spreadsheet_id: str
     credential_path: str
     service_account_email: str = DEFAULT_SERVICE_ACCOUNT_EMAIL
     worksheet_title: str = DEFAULT_WORKSHEET_TITLE
+    column_mapping: List[ColumnMapping] = field(default_factory=list)
+    minute_limit: int = 1
+
+    def mapping_dict(self) -> Dict[str, str]:
+        return {entry.field: entry.header for entry in self.column_mapping}
+
+    def update_mapping(self, mapping: Mapping[str, str]) -> None:
+        self.column_mapping = [ColumnMapping(field=key, header=value) for key, value in mapping.items()]
+
+    def to_json(self) -> Dict[str, object]:
+        return {
+            "spreadsheet_id": self.spreadsheet_id,
+            "credential_path": self.credential_path,
+            "service_account_email": self.service_account_email,
+            "worksheet_title": self.worksheet_title,
+            "minute_limit": self.minute_limit,
+            "column_mapping": [{"field": entry.field, "header": entry.header} for entry in self.column_mapping],
+        }
 
 
 def _ensure_default_settings(path: str) -> Dict[str, Dict]:
@@ -130,7 +159,7 @@ def _ensure_default_settings(path: str) -> Dict[str, Dict]:
     return data
 
 
-def _parse_font(name: str, data: Dict[str, object]) -> FontSpec:
+def _parse_font(name: str, data: Mapping[str, object]) -> FontSpec:
     return FontSpec(name=data.get("name", name), size_pt=int(data.get("size_pt", 12)))
 
 
@@ -142,6 +171,7 @@ def load_settings(path: str = DEFAULT_SETTINGS_PATH) -> DymoLabelSettings:
     fonts = {
         key: _parse_font(key, value)
         for key, value in dymo.get("fonts", {}).items()
+        if isinstance(value, Mapping)
     }
     layout = dymo.get("layout", {})
     return DymoLabelSettings(
@@ -172,12 +202,14 @@ def load_settings(path: str = DEFAULT_SETTINGS_PATH) -> DymoLabelSettings:
     )
 
 
-def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, str]:
-    default_settings = {
+def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, object]:
+    default_settings: Dict[str, object] = {
         "spreadsheet_id": DEFAULT_SPREADSHEET_ID,
         "credential_path": DEFAULT_CREDENTIALS_PATH,
         "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
         "worksheet_title": DEFAULT_WORKSHEET_TITLE,
+        "minute_limit": 1,
+        "column_mapping": [],
     }
     if not os.path.exists(path):
         directory = os.path.dirname(path)
@@ -190,43 +222,78 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, str]:
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
 
-    merged = dict(default_settings)
-    merged.update({key: value for key, value in data.items() if isinstance(value, str)})
+    merged: Dict[str, object] = dict(default_settings)
+    for key, value in data.items():
+        if key == "column_mapping" and isinstance(value, list):
+            merged[key] = [entry for entry in value if isinstance(entry, dict)]
+        elif key == "minute_limit":
+            try:
+                merged[key] = max(1, min(5, int(value)))
+            except (TypeError, ValueError):
+                merged[key] = default_settings[key]
+        elif isinstance(value, str):
+            merged[key] = value
     return merged
 
 
 def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSettings:
     data = _ensure_sync_settings(path)
-    return GoogleSyncSettings(
-        spreadsheet_id=data.get("spreadsheet_id", DEFAULT_SPREADSHEET_ID),
-        credential_path=data.get("credential_path", DEFAULT_CREDENTIALS_PATH),
-        service_account_email=data.get(
-            "service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL
-        ),
-        worksheet_title=data.get("worksheet_title", DEFAULT_WORKSHEET_TITLE),
+    mapping_entries: List[ColumnMapping] = []
+    for entry in data.get("column_mapping", []):
+        if not isinstance(entry, Mapping):
+            continue
+        field = entry.get("field")
+        header = entry.get("header")
+        if isinstance(field, str) and isinstance(header, str):
+            mapping_entries.append(ColumnMapping(field=field, header=header))
+
+    settings = GoogleSyncSettings(
+        spreadsheet_id=str(data.get("spreadsheet_id", DEFAULT_SPREADSHEET_ID)),
+        credential_path=str(data.get("credential_path", DEFAULT_CREDENTIALS_PATH)),
+        service_account_email=str(data.get("service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL)),
+        worksheet_title=str(data.get("worksheet_title", DEFAULT_WORKSHEET_TITLE)),
+        column_mapping=mapping_entries,
+        minute_limit=int(data.get("minute_limit", 1)),
     )
+    return settings
 
 
-def save_google_sync_settings(
-    settings: GoogleSyncSettings, path: str = SYNC_SETTINGS_PATH
-) -> None:
+def save_google_sync_settings(settings: GoogleSyncSettings, path: str = SYNC_SETTINGS_PATH) -> None:
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
 
-    payload = {
-        "spreadsheet_id": settings.spreadsheet_id,
-        "credential_path": settings.credential_path,
-        "service_account_email": settings.service_account_email,
-        "worksheet_title": settings.worksheet_title,
-    }
+    payload = settings.to_json()
 
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
 
 
+def save_column_mapping(mapping: Mapping[str, str], path: str = DEFAULT_SETTINGS_PATH) -> None:
+    data = _ensure_default_settings(path)
+    google_section = data.setdefault("google_sync", {})
+    if not isinstance(google_section, dict):
+        google_section = {}
+        data["google_sync"] = google_section
+    google_section["column_mapping"] = dict(mapping)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+
+
+def load_column_mapping(path: str = DEFAULT_SETTINGS_PATH) -> Dict[str, str]:
+    data = _ensure_default_settings(path)
+    google_section = data.get("google_sync", {})
+    if not isinstance(google_section, Mapping):
+        return {}
+    mapping = google_section.get("column_mapping", {})
+    if not isinstance(mapping, Mapping):
+        return {}
+    return {key: str(value) for key, value in mapping.items() if isinstance(value, (str, int, float))}
+
+
 __all__ = [
     "BarcodeSpec",
+    "ColumnMapping",
     "DymoLabelSettings",
     "GoogleSyncSettings",
     "FontSpec",
@@ -239,4 +306,6 @@ __all__ = [
     "load_settings",
     "load_google_sync_settings",
     "save_google_sync_settings",
+    "load_column_mapping",
+    "save_column_mapping",
 ]
