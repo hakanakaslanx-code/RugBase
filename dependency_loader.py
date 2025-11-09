@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 from core import deps_bootstrap
 
@@ -31,14 +31,17 @@ HIDDEN_IMPORTS: Iterable[str] = (
     "googleapiclient",
     "googleapiclient.discovery",
     "googleapiclient.http",
-    "google_auth_oauthlib.flow",
+    "googleapiclient._helpers",
     "google.oauth2.service_account",
+    "google.auth.transport.requests",
+    "google_auth_oauthlib.flow",
     "httplib2",
+    "oauthlib.oauth2",
 )
 
 _MISSING_DEPENDENCY_MESSAGE = (
-    "Google kütüphaneleri bulunamadı. Lütfen build’e hiddenimports ekleyin "
-    "ya da EXE ile aynı klasöre ‘vendor’ klasörünü koyun."
+    "Senkron modülü eksik. Kurulum paketini yeniden yükleyin veya geliştirme "
+    "ortamında 'pip install -r requirements.txt' çalıştırıp PyInstaller ile yeniden paketleyin."
 )
 
 _runtime_root: Optional[Path] = None
@@ -89,9 +92,10 @@ def bootstrap() -> bool:
     _google_available = deps_bootstrap.ensure_google_deps()
     if not _google_available:
         os.environ.setdefault("RUGBASE_DEPENDENCY_WARNING", _MISSING_DEPENDENCY_MESSAGE)
-        logger.warning(_MISSING_DEPENDENCY_MESSAGE)
+        logger.warning("[Deps] %s", _MISSING_DEPENDENCY_MESSAGE)
     else:
         os.environ.pop("RUGBASE_DEPENDENCY_WARNING", None)
+        logger.info("[Deps] Google bağımlılıkları başarıyla yüklendi.")
 
     _initialised = True
     return _google_available
@@ -103,6 +107,14 @@ def google_dependencies_available() -> bool:
     if not _initialised:
         return bootstrap()
     return _google_available
+
+
+def missing_google_dependencies() -> Sequence[str]:
+    """Return the missing Google modules detected during bootstrap."""
+
+    if not _initialised:
+        bootstrap()
+    return deps_bootstrap.missing_dependencies()
 
 
 def dependency_warning() -> str:
@@ -141,6 +153,7 @@ __all__ = [
     "bootstrap",
     "google_dependencies_available",
     "dependency_warning",
+    "missing_google_dependencies",
     "runtime_root",
     "vendor_path",
     "default_credentials_path",

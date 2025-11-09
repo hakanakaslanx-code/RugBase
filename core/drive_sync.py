@@ -1,6 +1,7 @@
 """Google Drive synchronisation for the RugBase SQLite database."""
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -10,15 +11,86 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple, NoReturn
 import tempfile
 from stat import S_IRUSR, S_IWUSR
+import site
+import sys
 
 import db
 from core import app_paths, deps_bootstrap, drive_api
 from core.hash import file_sha256
 
 logger = logging.getLogger(__name__)
+
+DEPENDENCY_ERROR_MESSAGE = "Senkron modülü eksik, lütfen kurulum paketini yeniden yükleyin."
+
+
+def _raise_dependency_error() -> NoReturn:
+    missing = deps_bootstrap.missing_dependencies()
+    details = ", ".join(missing) if missing else "bilinmiyor"
+    logger.error("[Deps] Google modülleri eksik: %s", details)
+    message = DEPENDENCY_ERROR_MESSAGE
+    if missing:
+        message += f" Eksik paketler: {details}"
+    raise SyncConfigurationError(message)
+
+
+def _ensure_dependencies_ready() -> None:
+    if deps_bootstrap.ensure_google_deps():
+        return
+    _raise_dependency_error()
+
+
+def _iter_site_directories() -> Iterable[str]:
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    try:
+        for path in site.getsitepackages():
+            if path:
+                candidates.append(path)
+    except Exception:  # pragma: no cover - environment dependent
+        logger.debug("[Deps] Global site-packages konumu okunamadı", exc_info=True)
+
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:  # pragma: no cover - environment dependent
+        logger.debug("[Deps] Kullanıcı site-packages konumu okunamadı", exc_info=True)
+        user_site = None
+    if isinstance(user_site, str) and user_site:
+        candidates.append(user_site)
+
+    python_path = os.environ.get("PYTHONPATH")
+    if python_path:
+        for part in python_path.split(os.pathsep):
+            if part:
+                candidates.append(part)
+
+    for raw in candidates:
+        normalised = os.path.abspath(raw)
+        if normalised and normalised not in seen:
+            seen.add(normalised)
+            yield normalised
+
+
+def _refresh_site_packages() -> None:
+    for directory in _iter_site_directories():
+        if not os.path.isdir(directory):
+            continue
+        try:
+            site.addsitedir(directory)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug(
+                "[Deps] Failed to register site-packages directory %s", directory, exc_info=True
+            )
+        else:
+            if directory not in sys.path:
+                sys.path.append(directory)
+            logger.debug("[Deps] site-packages directory registered: %s", directory)
+
+    importlib.invalidate_caches()
+
 
 app_paths.ensure_app_structure()
 
@@ -29,7 +101,7 @@ SECURITY_NOTE = (
     "derhal rotate edilmelidir."
 )
 
-logger.warning(SECURITY_NOTE)
+logger.warning("[Drive] %s", SECURITY_NOTE)
 
 DB_FILENAME = "rugbase.db"
 ROOT_FOLDER_ID = "1rM1Ev9BdY_hhNOTdJgaRwziomVmNrLfq"
@@ -39,6 +111,9 @@ SETTINGS_FILENAME = "drive_sync_settings.json"
 DEFAULT_POLL_INTERVAL = 30
 TOKEN_FILENAME = "token.json"
 CREDENTIALS_FILENAME = "service_account.json"
+DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
+DEFAULT_SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8/edit#gid=0"
+DEFAULT_PRIVATE_KEY_ID = "f81ab6e728a812fab039e53b66d70241766d757e"
 STATUS_CONNECTED = "connected"
 STATUS_OFFLINE = "offline"
 STATUS_REAUTHORISE = "reauthorize"
@@ -103,7 +178,9 @@ def _resolve_token_path(token_path: Optional[str]) -> str:
         expanded = Path(os.path.expanduser(str(token_path))).resolve()
         parts = [part.lower() for part in expanded.parts]
         if "desktop" in parts:
-            logger.warning("Token path on Desktop is not permitted; using default location")
+            logger.warning(
+                "[Drive] Token path masaüstünde olamaz; varsayılan konum kullanılacak"
+            )
         else:
             default_path = expanded
     default_path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,14 +196,14 @@ def _ensure_token_directory(token_path: str) -> str:
 
 
 def _credentials_storage_path(filename: str = CREDENTIALS_FILENAME) -> Path:
-    destination = app_paths.config_path(filename)
+    destination = app_paths.credentials_path(filename)
     destination.parent.mkdir(parents=True, exist_ok=True)
     return destination
 
 
 def _default_client_secret_path() -> str:
     storage = _credentials_storage_path()
-    return str(storage) if storage.exists() else ""
+    return str(storage)
 
 
 def _normalise_client_secret_path(candidate: Optional[str]) -> str:
@@ -137,6 +214,9 @@ def _normalise_client_secret_path(candidate: Optional[str]) -> str:
     source_path = Path(os.path.expanduser(str(candidate))).resolve()
     if destination.exists() and source_path == destination:
         return str(destination)
+    if source_path == destination and not source_path.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        return str(destination)
     if not source_path.exists():
         raise FileNotFoundError(f"Client secret file not found: {source_path}")
     try:
@@ -145,12 +225,14 @@ def _normalise_client_secret_path(candidate: Optional[str]) -> str:
         try:
             os.chmod(destination, S_IRUSR | S_IWUSR)
         except OSError:
-            logger.debug("Unable to set restrictive permissions on %s", destination, exc_info=True)
+            logger.debug(
+                "[Drive] Dosya izinleri ayarlanamadı: %s", destination, exc_info=True
+            )
     except OSError as exc:
         raise RuntimeError(
             f"Unable to copy client secret to {destination}: {exc}"
         ) from exc
-    logger.info("Client secret copied to %s", destination)
+    logger.info("[Drive] Service account dosyası %s konumuna kopyalandı", destination)
     return str(destination)
 
 
@@ -178,6 +260,9 @@ def _default_settings() -> Dict[str, object]:
         "changelog_folder_id": None,
         "backups_folder_id": None,
         "root_folder_id": ROOT_FOLDER_ID,
+        "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
+        "spreadsheet_url": DEFAULT_SPREADSHEET_URL,
+        "private_key_id": DEFAULT_PRIVATE_KEY_ID,
     }
 
 
@@ -207,10 +292,12 @@ def load_settings() -> Dict[str, object]:
         try:
             normalised_secret = _normalise_client_secret_path(secret_candidate)
         except FileNotFoundError:
-            logger.warning("Configured client secret missing at %s; clearing", secret_candidate)
+            logger.warning(
+                "[Drive] Tanımlanan service account dosyası bulunamadı: %s", secret_candidate
+            )
             normalised_secret = _default_client_secret_path()
         except RuntimeError as exc:
-            logger.error("Failed to store client secret: %s", exc)
+            logger.error("[Drive] Service account kaydedilemedi: %s", exc)
             raise
     if defaults.get("client_secret_path") != normalised_secret:
         defaults["client_secret_path"] = normalised_secret
@@ -218,6 +305,9 @@ def load_settings() -> Dict[str, object]:
     else:
         defaults["client_secret_path"] = normalised_secret
     defaults.setdefault("root_folder_id", ROOT_FOLDER_ID)
+    defaults.setdefault("service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL)
+    defaults.setdefault("spreadsheet_url", DEFAULT_SPREADSHEET_URL)
+    defaults.setdefault("private_key_id", DEFAULT_PRIVATE_KEY_ID)
     return defaults
 
 
@@ -254,10 +344,7 @@ def _ensure_configured(settings: Dict[str, object]) -> None:
 
 
 def _create_service(settings: Dict[str, object]):
-    if not deps_bootstrap.ensure_google_deps():
-        raise RuntimeError(
-            "Google API bağımlılıkları yüklenemedi. Ayrıntılar için log kayıtlarını kontrol edin."
-        )
+    _ensure_dependencies_ready()
     token_path = _ensure_token_directory(str(settings.get("token_path") or _default_token_path()))
     if settings.get("token_path") != token_path:
         settings["token_path"] = token_path
@@ -284,10 +371,7 @@ def _ensure_structure(service) -> Tuple[str, str, str]:
 def test_connection(candidate_settings: Dict[str, object]) -> Dict[str, str]:
     settings = load_settings()
     settings.update(candidate_settings)
-    if not deps_bootstrap.ensure_google_deps():
-        raise RuntimeError(
-            "Google API bağımlılıkları yüklenemedi. Ayrıntılar için log kayıtlarını kontrol edin."
-        )
+    _ensure_dependencies_ready()
     _ensure_configured(settings)
     service = _create_service(settings)
     root_id, changelog_id, backups_id = _ensure_structure(service)
@@ -441,7 +525,7 @@ class DriveSync:
         except OSError as exc:
             logger.error("Failed to back up local database to %s: %s", backup_path, exc)
             return None
-        logger.info("Local database backed up to %s", backup_path)
+        logger.info("[Drive] Yerel veritabanı yedeklendi: %s", backup_path)
         return backup_path
 
     def _log_conflict(self, settings: Dict[str, object], local_hash: Optional[str], remote_hash: Optional[str], local_mtime: Optional[datetime], remote_mtime: Optional[datetime]) -> None:
@@ -532,7 +616,7 @@ class DriveSync:
             try:
                 self._copy_to_backups(service, file_id, structure)
             except Exception:  # pragma: no cover - defensive
-                logger.warning("Failed to create remote conflict backup", exc_info=True)
+                logger.warning("[Drive] Uzak çatışma yedeği oluşturulamadı", exc_info=True)
             self._log_conflict(settings, local_hash, remote_hash, local_mtime, remote_mtime)
             self._conflict_pending = True
             self._pending_conflict_backup = backup_path
@@ -675,4 +759,7 @@ __all__ = [
     "STATUS_OFFLINE",
     "STATUS_REAUTHORISE",
     "STATUS_CONFLICT",
+    "DEFAULT_SERVICE_ACCOUNT_EMAIL",
+    "DEFAULT_SPREADSHEET_URL",
+    "DEFAULT_PRIVATE_KEY_ID",
 ]

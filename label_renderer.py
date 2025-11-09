@@ -7,14 +7,12 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from core.dependencies import DependencyManager
-
 Image = None  # type: ignore[assignment]
 ImageDraw = None  # type: ignore[assignment]
 ImageFont = None  # type: ignore[assignment]
 PIL_IMPORT_MESSAGE = (
-    "Pillow (PIL) is required to generate labels. The application will try to install it "
-    "automatically, but manual installation via 'pip install Pillow' may be necessary."
+    "Pillow (PIL) etiket üretimi için gereklidir. Paketi kurulum sırasında"
+    " dahil edin veya geliştirme ortamında 'pip install Pillow' komutunu çalıştırın."
 )
 
 
@@ -34,36 +32,24 @@ def _import_pillow() -> bool:
 
 
 PIL_AVAILABLE = _import_pillow()
-_PIL_INSTALL_ATTEMPTED = False
 
 
 def ensure_pillow() -> bool:
-    """Ensure Pillow is installed and imported, attempting automatic installation."""
+    """Ensure Pillow can be imported without triggering runtime installation."""
 
-    global PIL_AVAILABLE, PIL_IMPORT_MESSAGE, _PIL_INSTALL_ATTEMPTED
+    global PIL_AVAILABLE, PIL_IMPORT_MESSAGE
     if PIL_AVAILABLE:
         return True
 
-    if not _PIL_INSTALL_ATTEMPTED:
-        _PIL_INSTALL_ATTEMPTED = True
-        success, message = DependencyManager.pip_install(["Pillow"])
-        if not success:
-            PIL_IMPORT_MESSAGE = (
-                "Pillow (PIL) is required to generate labels and could not be installed automatically. "
-                f"Please install it manually. Details: {message}"
-            )
-            return False
-        if _import_pillow():
-            PIL_AVAILABLE = True
-            PIL_IMPORT_MESSAGE = ""
-            return True
-        PIL_IMPORT_MESSAGE = (
-            "Pillow (PIL) was installed but could not be imported. Please restart the application "
-            "or install Pillow manually."
-        )
-        return False
+    if _import_pillow():
+        PIL_AVAILABLE = True
+        PIL_IMPORT_MESSAGE = ""
+        return True
 
-    # Installation already attempted but failed; message is populated.
+    PIL_IMPORT_MESSAGE = (
+        "Pillow (PIL) bulunamadı. Lütfen uygulama paketini yeniden oluşturun"
+        " veya geliştirme sırasında 'pip install Pillow' komutunu uygulayın."
+    )
     return False
 
 import db
