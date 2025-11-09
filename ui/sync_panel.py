@@ -144,7 +144,7 @@ class SyncPanel(ttk.Frame):
         ttk.Label(
             credentials_frame,
             textvariable=self.credentials_status_var,
-            foreground="#555555",
+            style="CardHint.TLabel",
         ).grid(row=0, column=1, sticky="w")
 
         button_frame = ttk.Frame(form)
@@ -175,7 +175,7 @@ class SyncPanel(ttk.Frame):
         ttk.Label(
             form,
             textvariable=self.metadata_hint_var,
-            foreground="#0b5394",
+            style="Info.TLabel",
             wraplength=460,
             justify=tk.LEFT,
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -577,6 +577,22 @@ class SyncPanel(ttk.Frame):
 
     def _initial_test_connection(self) -> None:
         self._on_test_connection()
+
+    def apply_theme(self, palette: Dict[str, str]) -> None:
+        """Update widget colors to match the active theme."""
+
+        self.log_widget.configure(
+            background=palette["frame"],
+            foreground=palette["foreground"],
+            insertbackground=palette["foreground"],
+            highlightbackground=palette["border"],
+            highlightcolor=palette["border"],
+            selectbackground=palette["selection"],
+            selectforeground=palette["selection_text"],
+        )
+        for child in self.log_widget.winfo_children():
+            if isinstance(child, tk.Scrollbar):
+                child.configure(background=palette["frame"], troughcolor=palette["background"])
 
     def shutdown(self) -> None:
         if self._auto_job is not None:

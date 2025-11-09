@@ -20,10 +20,14 @@ def _hidden_import_args() -> list[str]:
 def run() -> None:
     try:
         import PyInstaller.__main__  # type: ignore
-    except ModuleNotFoundError as exc:  # pragma: no cover - runtime guard
-        raise SystemExit(
-            "PyInstaller is required to build the executable. Install it with 'pip install pyinstaller'."
-        ) from exc
+    except ModuleNotFoundError:  # pragma: no cover - runtime guard
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+        except subprocess.CalledProcessError as install_exc:
+            raise SystemExit(
+                "PyInstaller is required to build the executable and could not be installed automatically."
+            ) from install_exc
+        import PyInstaller.__main__  # type: ignore
 
     project_dir = pathlib.Path(__file__).resolve().parent
     entry_point = project_dir / "app.py"
