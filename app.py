@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 import db
+from core.dependencies import DependencyManager
 from core.logging_config import configure_logging
 from core.version import __version__
 from core.single_instance import SingleInstanceError, acquire_instance_lock
@@ -22,6 +23,7 @@ def _notify_already_running() -> None:
 
 
 def main() -> None:
+    DependencyManager.add_to_sys_path()
     configure_logging()
     try:
         instance_lock = acquire_instance_lock("RugBase")

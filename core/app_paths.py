@@ -24,10 +24,12 @@ def _detect_base_directory() -> Path:
 
 
 APP_DIR: Path = _detect_base_directory()
-TOKENS_DIR: Path = APP_DIR / "tokens"
+OAUTH_DIR: Path = APP_DIR / "oauth"
 CACHE_DIR: Path = APP_DIR / "cache"
 VENDOR_DIR: Path = APP_DIR / "vendor"
 BACKUP_DIR: Path = APP_DIR / "backups"
+LOG_DIR: Path = APP_DIR / "logs"
+DEPENDENCY_DIR: Path = APP_DIR / "site-packages"
 
 
 def install_path(*parts: str) -> Path:
@@ -47,7 +49,7 @@ def ensure_directory(path: Path) -> Path:
 def ensure_app_structure() -> None:
     """Create the base directories required for application data."""
 
-    for directory in (APP_DIR, TOKENS_DIR, CACHE_DIR, BACKUP_DIR):
+    for directory in (APP_DIR, OAUTH_DIR, CACHE_DIR, BACKUP_DIR, LOG_DIR, DEPENDENCY_DIR):
         ensure_directory(directory)
 
 
@@ -56,6 +58,36 @@ def data_path(*parts: str) -> Path:
 
     ensure_app_structure()
     target = APP_DIR.joinpath(*parts)
+    if target.parent and not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def oauth_path(*parts: str) -> Path:
+    """Return a path inside the OAuth configuration directory."""
+
+    ensure_directory(OAUTH_DIR)
+    target = OAUTH_DIR.joinpath(*parts)
+    if target.parent and not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def logs_path(*parts: str) -> Path:
+    """Return a path inside the application log directory."""
+
+    ensure_directory(LOG_DIR)
+    target = LOG_DIR.joinpath(*parts)
+    if target.parent and not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def dependencies_path(*parts: str) -> Path:
+    """Return a path inside the managed dependency directory."""
+
+    ensure_directory(DEPENDENCY_DIR)
+    target = DEPENDENCY_DIR.joinpath(*parts)
     if target.parent and not target.parent.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
     return target
@@ -77,12 +109,17 @@ def ensure_vendor_on_path() -> Path:
 
 __all__ = [
     "APP_DIR",
-    "TOKENS_DIR",
+    "OAUTH_DIR",
     "CACHE_DIR",
     "VENDOR_DIR",
     "BACKUP_DIR",
+    "LOG_DIR",
+    "DEPENDENCY_DIR",
     "install_path",
     "data_path",
+    "oauth_path",
+    "logs_path",
+    "dependencies_path",
     "ensure_app_structure",
     "ensure_directory",
     "ensure_vendor_on_path",

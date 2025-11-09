@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from core import dependencies
+from core.dependencies import DependencyManager
 
 Image = None  # type: ignore[assignment]
 ImageDraw = None  # type: ignore[assignment]
@@ -46,7 +46,7 @@ def ensure_pillow() -> bool:
 
     if not _PIL_INSTALL_ATTEMPTED:
         _PIL_INSTALL_ATTEMPTED = True
-        success, message = dependencies.install_packages(["Pillow"])
+        success, message = DependencyManager.pip_install(["Pillow"])
         if not success:
             PIL_IMPORT_MESSAGE = (
                 "Pillow (PIL) is required to generate labels and could not be installed automatically. "

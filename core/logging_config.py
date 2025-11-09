@@ -5,8 +5,9 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import db
+from core import app_paths
 
+_LOG_FILENAME = "debug.log"
 _LOG_PATH: Optional[Path] = None
 
 
@@ -31,7 +32,7 @@ def configure_logging(level: int = logging.INFO) -> Path:
     if _LOG_PATH is not None:
         return _LOG_PATH
 
-    log_path = Path(db.data_path("rugbase.log"))
+    log_path = app_paths.logs_path(_LOG_FILENAME)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         log_path.touch(exist_ok=True)
