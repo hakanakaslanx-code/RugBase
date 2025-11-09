@@ -24,8 +24,8 @@ def _detect_base_directory() -> Path:
 
 
 APP_DIR: Path = _detect_base_directory()
-OAUTH_DIR: Path = APP_DIR / "oauth"
-CACHE_DIR: Path = APP_DIR / "cache"
+CONFIG_DIR: Path = APP_DIR / "config"
+TOKENS_DIR: Path = APP_DIR / "tokens"
 VENDOR_DIR: Path = APP_DIR / "vendor"
 BACKUP_DIR: Path = APP_DIR / "backups"
 LOG_DIR: Path = APP_DIR / "logs"
@@ -49,7 +49,14 @@ def ensure_directory(path: Path) -> Path:
 def ensure_app_structure() -> None:
     """Create the base directories required for application data."""
 
-    for directory in (APP_DIR, OAUTH_DIR, CACHE_DIR, BACKUP_DIR, LOG_DIR, DEPENDENCY_DIR):
+    for directory in (
+        APP_DIR,
+        CONFIG_DIR,
+        TOKENS_DIR,
+        BACKUP_DIR,
+        LOG_DIR,
+        DEPENDENCY_DIR,
+    ):
         ensure_directory(directory)
 
 
@@ -63,11 +70,21 @@ def data_path(*parts: str) -> Path:
     return target
 
 
-def oauth_path(*parts: str) -> Path:
-    """Return a path inside the OAuth configuration directory."""
+def config_path(*parts: str) -> Path:
+    """Return a path inside the configuration directory."""
 
-    ensure_directory(OAUTH_DIR)
-    target = OAUTH_DIR.joinpath(*parts)
+    ensure_directory(CONFIG_DIR)
+    target = CONFIG_DIR.joinpath(*parts)
+    if target.parent and not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def tokens_path(*parts: str) -> Path:
+    """Return a path inside the managed tokens directory."""
+
+    ensure_directory(TOKENS_DIR)
+    target = TOKENS_DIR.joinpath(*parts)
     if target.parent and not target.parent.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
     return target
@@ -109,15 +126,16 @@ def ensure_vendor_on_path() -> Path:
 
 __all__ = [
     "APP_DIR",
-    "OAUTH_DIR",
-    "CACHE_DIR",
+    "CONFIG_DIR",
+    "TOKENS_DIR",
     "VENDOR_DIR",
     "BACKUP_DIR",
     "LOG_DIR",
     "DEPENDENCY_DIR",
     "install_path",
     "data_path",
-    "oauth_path",
+    "config_path",
+    "tokens_path",
     "logs_path",
     "dependencies_path",
     "ensure_app_structure",

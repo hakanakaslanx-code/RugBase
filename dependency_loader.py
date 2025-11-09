@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
+from core import deps_bootstrap
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -70,18 +72,6 @@ def _ensure_vendor_on_path(root: Path) -> Optional[Path]:
     return vendor
 
 
-def _google_import_available() -> bool:
-    try:  # pragma: no cover - environment dependent
-        import googleapiclient  # type: ignore  # noqa: F401
-        import google_auth_oauthlib  # type: ignore  # noqa: F401
-        import google.oauth2  # type: ignore  # noqa: F401
-    except ImportError as exc:
-        logger.debug("Google dependency import failed: %s", exc, exc_info=True)
-        return False
-    else:
-        return True
-
-
 def bootstrap() -> bool:
     """Initialise dependency loading for the current process."""
 
@@ -96,7 +86,7 @@ def bootstrap() -> bool:
     if _vendor_path:
         os.environ["RUGBASE_VENDOR_PATH"] = str(_vendor_path)
 
-    _google_available = _google_import_available()
+    _google_available = deps_bootstrap.ensure_google_deps()
     if not _google_available:
         os.environ.setdefault("RUGBASE_DEPENDENCY_WARNING", _MISSING_DEPENDENCY_MESSAGE)
         logger.warning(_MISSING_DEPENDENCY_MESSAGE)
