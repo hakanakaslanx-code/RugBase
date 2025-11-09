@@ -1,3 +1,6 @@
+import dependency_loader
+dependency_loader.bootstrap()
+
 import tkinter as tk
 from tkinter import messagebox
 

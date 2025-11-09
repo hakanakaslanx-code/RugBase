@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+from dependency_loader import runtime_root
+
 logger = logging.getLogger(__name__)
 
 _APP_ENV_VARS: Iterable[str] = ("LOCALAPPDATA", "APPDATA")
@@ -26,6 +28,13 @@ TOKENS_DIR: Path = APP_DIR / "tokens"
 CACHE_DIR: Path = APP_DIR / "cache"
 VENDOR_DIR: Path = APP_DIR / "vendor"
 BACKUP_DIR: Path = APP_DIR / "backups"
+
+
+def install_path(*parts: str) -> Path:
+    """Return a path relative to the application installation root."""
+
+    root = runtime_root()
+    return root.joinpath(*parts)
 
 
 def ensure_directory(path: Path) -> Path:
@@ -72,6 +81,7 @@ __all__ = [
     "CACHE_DIR",
     "VENDOR_DIR",
     "BACKUP_DIR",
+    "install_path",
     "data_path",
     "ensure_app_structure",
     "ensure_directory",

@@ -5,6 +5,15 @@ from __future__ import annotations
 import os
 import pathlib
 
+from dependency_loader import HIDDEN_IMPORTS
+
+
+def _hidden_import_args() -> list[str]:
+    args: list[str] = []
+    for module in HIDDEN_IMPORTS:
+        args.append(f"--hidden-import={module}")
+    return args
+
 
 def run() -> None:
     try:
@@ -19,23 +28,18 @@ def run() -> None:
 
     data_sep = os.pathsep
 
-    PyInstaller.__main__.run(
-        [
-            "--name=RugBase",
-            "--onefile",
-            "--windowed",
-            "--hidden-import=googleapiclient.discovery",
-            "--hidden-import=googleapiclient.errors",
-            "--hidden-import=googleapiclient.http",
-            "--hidden-import=google.oauth2.credentials",
-            "--hidden-import=google.auth.transport.requests",
-            "--hidden-import=google_auth_oauthlib.flow",
-            f"--add-data={project_dir / 'core'}{data_sep}core",
-            f"--add-data={project_dir / 'ui_item_card.py'}{data_sep}.",
-            f"--add-data={project_dir / 'ui_main.py'}{data_sep}.",
-            str(entry_point),
-        ]
-    )
+    args = [
+        "--name=RugBase",
+        "--onefile",
+        "--windowed",
+        *(_hidden_import_args()),
+        f"--add-data={project_dir / 'core'}{data_sep}core",
+        f"--add-data={project_dir / 'ui_item_card.py'}{data_sep}.",
+        f"--add-data={project_dir / 'ui_main.py'}{data_sep}.",
+        str(entry_point),
+    ]
+
+    PyInstaller.__main__.run(args)
 
 
 if __name__ == "__main__":

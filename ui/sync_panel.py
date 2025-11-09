@@ -18,6 +18,7 @@ from settings import (
     DEFAULT_CREDENTIALS_PATH,
     DEFAULT_SERVICE_ACCOUNT_EMAIL,
     DEFAULT_SPREADSHEET_ID,
+    DEFAULT_WORKSHEET_TITLE,
     GoogleSyncSettings,
     load_google_sync_settings,
     save_google_sync_settings,
@@ -99,6 +100,9 @@ class SyncPanel(ttk.Frame):
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
         self.spreadsheet_var = tk.StringVar(value=self._settings.spreadsheet_id)
+        self.worksheet_var = tk.StringVar(
+            value=self._settings.worksheet_title or DEFAULT_WORKSHEET_TITLE
+        )
         self.service_email_var = tk.StringVar(
             value=self._settings.service_account_email or DEFAULT_SERVICE_ACCOUNT_EMAIL
         )
@@ -108,7 +112,7 @@ class SyncPanel(ttk.Frame):
         form.grid(row=0, column=0, sticky="nsew")
         form.columnconfigure(1, weight=1)
 
-        ttk.Label(form, text="Spreadsheet ID").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
+        ttk.Label(form, text="Sheet ID").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
         self.spreadsheet_entry = ttk.Entry(form, textvariable=self.spreadsheet_var)
         self.spreadsheet_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6))
         self.spreadsheet_entry.bind("<FocusOut>", self._on_spreadsheet_focus_out)
@@ -120,14 +124,19 @@ class SyncPanel(ttk.Frame):
             form, textvariable=self.service_email_var, state="readonly"
         ).grid(row=1, column=1, sticky="ew", pady=6)
 
-        ttk.Label(form, text="Kimlik Dosyası").grid(row=2, column=0, sticky=tk.W, pady=6)
+        ttk.Label(form, text="Çalışma sayfası adı").grid(row=2, column=0, sticky=tk.W, pady=6)
+        self.worksheet_entry = ttk.Entry(form, textvariable=self.worksheet_var)
+        self.worksheet_entry.grid(row=2, column=1, sticky="ew", pady=6)
+        self.worksheet_entry.bind("<FocusOut>", self._on_worksheet_focus_out)
+
+        ttk.Label(form, text="Service Account JSON").grid(row=3, column=0, sticky=tk.W, pady=6)
         credentials_frame = ttk.Frame(form)
-        credentials_frame.grid(row=2, column=1, sticky="ew", pady=6)
+        credentials_frame.grid(row=3, column=1, sticky="ew", pady=6)
         credentials_frame.columnconfigure(1, weight=1)
 
         self.choose_button = ttk.Button(
             credentials_frame,
-            text="Kimlik Dosyası Seç (.json)",
+            text="Service Account JSON seç",
             command=self._on_choose_credentials,
         )
         self.choose_button.grid(row=0, column=0, padx=(0, 6))
@@ -139,7 +148,7 @@ class SyncPanel(ttk.Frame):
         ).grid(row=0, column=1, sticky="w")
 
         button_frame = ttk.Frame(form)
-        button_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        button_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         button_frame.columnconfigure(3, weight=1)
 
         self.test_button = ttk.Button(
@@ -162,6 +171,15 @@ class SyncPanel(ttk.Frame):
         )
         self.auto_button.grid(row=0, column=3, sticky=tk.W)
 
+        self.metadata_hint_var = tk.StringVar()
+        ttk.Label(
+            form,
+            textvariable=self.metadata_hint_var,
+            foreground="#0b5394",
+            wraplength=460,
+            justify=tk.LEFT,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
         log_frame = ttk.LabelFrame(self, text="Durum Günlüğü", padding=12)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         log_frame.columnconfigure(0, weight=1)
@@ -179,6 +197,14 @@ class SyncPanel(ttk.Frame):
         parsed = sheets_sync.parse_spreadsheet_id(self.spreadsheet_var.get())
         if parsed and parsed != self.spreadsheet_var.get():
             self.spreadsheet_var.set(parsed)
+        self._persist_settings()
+
+    def _on_worksheet_focus_out(self, _event: tk.Event) -> None:
+        title = (self.worksheet_var.get() or "").strip()
+        if not title:
+            title = DEFAULT_WORKSHEET_TITLE
+        if title != self.worksheet_var.get():
+            self.worksheet_var.set(title)
         self._persist_settings()
 
     def _on_choose_credentials(self) -> None:
@@ -270,9 +296,12 @@ class SyncPanel(ttk.Frame):
         except SheetsSyncError as exc:
             self._post_log(f"Bağlantı testi başarısız: {exc}")
             self._connection_ready = False
+            self._post_metadata_hint("")
         else:
             self._post_log("Bağlantı testi başarılı.")
             self._connection_ready = True
+            hint = self._compute_metadata_hint(settings)
+            self._post_metadata_hint(hint)
 
     def _task_pull(self) -> None:
         settings = self._collect_settings()
@@ -281,12 +310,15 @@ class SyncPanel(ttk.Frame):
         except SheetsSyncError as exc:
             self._post_log(f"Çekme başarısız: {exc}")
             self._connection_ready = False
+            self._post_metadata_hint("")
         else:
             self._post_log(
                 "Çekme tamamlandı: "
                 f"{stats['inserted']} yeni, {stats['updated']} güncelleme, {stats['conflicts']} çakışma."
             )
-
+            self._connection_ready = True
+            hint = self._compute_metadata_hint(settings)
+            self._post_metadata_hint(hint)
 
     def _task_push(self) -> None:
         settings = self._collect_settings()
@@ -295,11 +327,15 @@ class SyncPanel(ttk.Frame):
         except SheetsSyncError as exc:
             self._post_log(f"Gönderme başarısız: {exc}")
             self._connection_ready = False
+            self._post_metadata_hint("")
         else:
             self._post_log(
                 "Gönderme tamamlandı: "
                 f"{stats['inserted']} yeni, {stats['updated']} güncelleme, {stats['conflicts']} çakışma."
             )
+            self._connection_ready = True
+            hint = self._compute_metadata_hint(settings)
+            self._post_metadata_hint(hint)
 
     def _task_auto_sync(self) -> None:
         settings = self._collect_settings()
@@ -309,6 +345,7 @@ class SyncPanel(ttk.Frame):
             self._post_log(f"Otomatik eşitleme başarısız: {exc}")
             self._connection_ready = False
             self._auto_sync_enabled = False
+            self._post_metadata_hint("")
         else:
             pull = summary.get("pull", {})
             push = summary.get("push", {})
@@ -317,6 +354,9 @@ class SyncPanel(ttk.Frame):
                 f"Pull ({pull.get('inserted', 0)} yeni, {pull.get('updated', 0)} güncelleme); "
                 f"Push ({push.get('inserted', 0)} yeni, {push.get('updated', 0)} güncelleme)."
             )
+            self._connection_ready = True
+            hint = self._compute_metadata_hint(settings)
+            self._post_metadata_hint(hint)
 
     # ------------------------------------------------------------------
     # Worker callbacks and scheduling
@@ -415,12 +455,17 @@ class SyncPanel(ttk.Frame):
         spreadsheet_id = sheets_sync.parse_spreadsheet_id(self.spreadsheet_var.get())
         if spreadsheet_id != self.spreadsheet_var.get():
             self.spreadsheet_var.set(spreadsheet_id)
+        worksheet = (self.worksheet_var.get() or DEFAULT_WORKSHEET_TITLE).strip()
+        if worksheet != self.worksheet_var.get():
+            self.worksheet_var.set(worksheet)
         settings = GoogleSyncSettings(
             spreadsheet_id=spreadsheet_id or DEFAULT_SPREADSHEET_ID,
             credential_path=self.credentials_path_var.get() or DEFAULT_CREDENTIALS_PATH,
             service_account_email=self.service_email_var.get() or DEFAULT_SERVICE_ACCOUNT_EMAIL,
+            worksheet_title=worksheet or DEFAULT_WORKSHEET_TITLE,
         )
         save_google_sync_settings(settings)
+        self._settings = settings
         return settings
 
     def _persist_settings(self) -> None:
@@ -428,8 +473,69 @@ class SyncPanel(ttk.Frame):
             spreadsheet_id=self.spreadsheet_var.get() or DEFAULT_SPREADSHEET_ID,
             credential_path=self.credentials_path_var.get() or DEFAULT_CREDENTIALS_PATH,
             service_account_email=self.service_email_var.get() or DEFAULT_SERVICE_ACCOUNT_EMAIL,
+            worksheet_title=(self.worksheet_var.get() or DEFAULT_WORKSHEET_TITLE) or DEFAULT_WORKSHEET_TITLE,
         )
         save_google_sync_settings(settings)
+        self._settings = settings
+
+    @staticmethod
+    def _parse_iso_timestamp(value: str) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            if value.endswith("Z"):
+                try:
+                    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+        return None
+
+    def _determine_metadata_hint(
+        self, local: Dict[str, str], remote: Dict[str, str]
+    ) -> str:
+        if not local and not remote:
+            return ""
+        if not remote:
+            return "Yerel veritabanı daha yeni görünüyor. Gönder (Push) önerilir."
+        if not local:
+            return "Google Sheets verisi daha yeni görünüyor. Çek (Pull) önerilir."
+
+        local_time = self._parse_iso_timestamp(local.get("mtime", ""))
+        remote_time = self._parse_iso_timestamp(remote.get("mtime", ""))
+
+        if local_time and remote_time:
+            if local_time > remote_time:
+                return "Yerel veritabanı daha yeni görünüyor. Gönder (Push) önerilir."
+            if remote_time > local_time:
+                return "Google Sheets verisi daha yeni görünüyor. Çek (Pull) önerilir."
+        elif local_time and not remote_time:
+            return "Yerel veritabanı daha yeni görünüyor. Gönder (Push) önerilir."
+        elif remote_time and not local_time:
+            return "Google Sheets verisi daha yeni görünüyor. Çek (Pull) önerilir."
+
+        if (local.get("sha256") or "") != (remote.get("sha256") or ""):
+            return (
+                "Yerel ve Sheets verileri farklı görünüyor. Çek (Pull) veya Gönder (Push) "
+                "işlemini gözden geçirin."
+            )
+        return ""
+
+    def _compute_metadata_hint(self, settings: GoogleSyncSettings) -> str:
+        local = self._service.get_local_metadata()
+        try:
+            remote = self._service.get_remote_metadata(settings)
+        except SheetsSyncError as exc:
+            self._post_log(f"Metadata okunamadı: {exc}")
+            return ""
+        return self._determine_metadata_hint(local, remote)
+
+    def _post_metadata_hint(self, message: str) -> None:
+        def _update() -> None:
+            self.metadata_hint_var.set(message)
+
+        self.after(0, _update)
 
     def _update_credentials_state(self) -> None:
         path = self.credentials_path_var.get()
