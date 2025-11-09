@@ -1,101 +1,132 @@
 """Utility helpers for installing optional runtime dependencies."""
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import logging
 import subprocess
 import sys
-from typing import Iterable, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Iterable, Sequence, Tuple
+
+from core import app_paths
 
 logger = logging.getLogger(__name__)
 
 
-def _run_subprocess(command: Sequence[str]) -> Tuple[bool, str]:
-    """Execute ``command`` returning a success flag and combined output."""
+class DependencyManager:
+    """Manage third-party dependencies shipped outside the executable."""
 
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    output = (result.stdout or "").strip()
-    return result.returncode == 0, output
+    install_target: Path = app_paths.DEPENDENCY_DIR
+    log_directory: Path = app_paths.LOG_DIR
+    pip_timeout: int = 300
 
+    @classmethod
+    def ensure_paths(cls) -> None:
+        """Create the dependency and log directories."""
 
-def _pip_args(
-    packages: Sequence[str],
-    *,
-    target: Optional[str] = None,
-    upgrade: bool = False,
-    extra: Iterable[str] = (),
-) -> List[str]:
-    command: List[str] = [
-        sys.executable,
-        "-m",
-        "pip",
-        "--disable-pip-version-check",
-        "install",
-    ]
-    if upgrade:
-        command.append("--upgrade")
-    if target:
-        command.extend(["--target", target])
-    command.extend(packages)
-    command.extend(extra)
-    return command
+        app_paths.ensure_directory(cls.install_target)
+        app_paths.ensure_directory(cls.log_directory)
 
+    @classmethod
+    def add_to_sys_path(cls) -> bool:
+        """Prepend the dependency directory to ``sys.path`` if it exists."""
 
-def install_packages(
-    packages: Sequence[str],
-    *,
-    target: Optional[str] = None,
-    upgrade: bool = False,
-) -> Tuple[bool, str]:
-    """Install ``packages`` using pip, attempting to bootstrap pip when necessary."""
+        cls.ensure_paths()
+        target = str(cls.install_target)
+        if not cls.install_target.exists():
+            logger.debug("Dependency target not yet available: %s", target)
+            return False
+        if target not in sys.path:
+            sys.path.insert(0, target)
+            logger.info("Dependency target added to sys.path: %s", target)
+        else:
+            logger.debug("Dependency target already present on sys.path: %s", target)
+        logger.info("sys.path snapshot after dependency setup:\n%s", "\n".join(sys.path))
+        return True
 
-    packages = [package for package in packages if package]
-    if not packages:
-        return True, ""
+    @staticmethod
+    def is_installed(packages: Iterable[str]) -> bool:
+        """Return ``True`` if all dotted-path packages can be imported."""
 
-    logger.info("Attempting to install packages: %s", ", ".join(packages))
-    success, output = _run_subprocess(_pip_args(packages, target=target, upgrade=upgrade))
-    if output:
-        logger.info("pip install output:\n%s", output)
-    if success:
+        for package in packages:
+            if not package:
+                continue
+            if importlib.util.find_spec(package) is None:
+                return False
+        return True
+
+    @classmethod
+    def pip_install(
+        cls, packages: Sequence[str], *, timeout: int | None = None
+    ) -> Tuple[bool, str]:
+        """Install ``packages`` into the managed dependency directory."""
+
+        cls.ensure_paths()
+        filtered = [package for package in packages if package]
+        if not filtered:
+            logger.debug("No packages specified for pip installation")
+            return True, ""
+
+        timeout = timeout or cls.pip_timeout
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--no-input",
+            "--disable-pip-version-check",
+            "--no-color",
+            "--only-binary=:all:",
+            "--target",
+            str(cls.install_target),
+            *filtered,
+        ]
+        logger.info("Installing dependencies with pip: %s", ", ".join(filtered))
+
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive
+            output = ((exc.stdout or "") + (exc.stderr or "")).strip()
+            logger.error(
+                "pip install timed out after %s seconds for packages: %s",
+                timeout,
+                ", ".join(filtered),
+            )
+            if output:
+                logger.error("pip output before timeout:\n%s", output)
+            return False, output
+        except OSError as exc:  # pragma: no cover - environment dependent
+            logger.error("Failed to invoke pip: %s", exc)
+            return False, str(exc)
+
+        output = (result.stdout or "").strip()
+        if output:
+            logger.info("pip install output:\n%s", output)
+
+        if result.returncode != 0:
+            logger.error(
+                "pip install failed with exit code %s for packages: %s",
+                result.returncode,
+                ", ".join(filtered),
+            )
+            return False, output
+
+        cls.add_to_sys_path()
+        importlib.invalidate_caches()
+        logger.info(
+            "sys.path snapshot after successful pip install:\n%s",
+            "\n".join(sys.path),
+        )
         return True, output
 
-    lowered = output.lower()
-    pip_missing = "no module named pip" in lowered or "pip is not recognized" in lowered
-    if pip_missing:
-        logger.warning("pip not available; attempting to bootstrap ensurepip")
-        ensure_success, ensure_output = _run_subprocess(
-            [sys.executable, "-m", "ensurepip", "--upgrade"]
-        )
-        if ensure_output:
-            logger.info("ensurepip output:\n%s", ensure_output)
-        if not ensure_success:
-            details = ensure_output or output
-            return False, f"pip could not be bootstrapped: {details}"
-        success, output = _run_subprocess(_pip_args(packages, target=target, upgrade=upgrade))
-        if output:
-            logger.info("pip install output after ensurepip:\n%s", output)
-        if success:
-            return True, output
 
-    permission_error = any(
-        keyword in lowered for keyword in ("permission", "access is denied", "permission denied")
-    )
-    if permission_error and target is None:
-        logger.warning("Permission error detected during installation; retrying with --user")
-        success, user_output = _run_subprocess(
-            _pip_args(packages, upgrade=upgrade, extra=("--user",))
-        )
-        if user_output:
-            logger.info("pip install --user output:\n%s", user_output)
-        if success:
-            return True, user_output
-        output = f"{output}\n{user_output}".strip()
-
-    logger.error("Failed to install packages %s", ", ".join(packages))
-    return False, output
+__all__ = ["DependencyManager"]

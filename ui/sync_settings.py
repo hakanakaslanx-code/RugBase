@@ -36,7 +36,10 @@ class SyncSettingsWindow:
         creds_frame = ttk.LabelFrame(self.main_frame, text="Google Drive Credentials", padding=10)
         creds_frame.grid(row=0, column=0, sticky="ew", **padding)
 
-        ttk.Label(creds_frame, text="Client Secret (client_secret.json):").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            creds_frame,
+            text="Service Account (service_account.json):",
+        ).grid(row=0, column=0, sticky="w")
         self.client_secret_var = tk.StringVar()
         client_entry = ttk.Entry(creds_frame, textvariable=self.client_secret_var, width=50)
         client_entry.grid(row=1, column=0, sticky="ew", pady=(2, 6))
@@ -196,8 +199,10 @@ class SyncSettingsWindow:
             messagebox.showerror("Sync Settings", "Polling interval must be a number.", parent=self.window)
             return
 
-        if data["client_secret_path"] and not os.path.exists(data["client_secret_path"]):
-            messagebox.showerror("Sync Settings", "Client secret file does not exist.", parent=self.window)
+        storage_path = drive_sync.service_account_storage_path()
+        client_candidate = data.get("client_secret_path")
+        if client_candidate and client_candidate != storage_path and not os.path.exists(client_candidate):
+            messagebox.showerror("Sync Settings", "Service account file does not exist.", parent=self.window)
             return
 
         data["poll_interval"] = interval
@@ -210,6 +215,8 @@ class SyncSettingsWindow:
             messagebox.showerror("Sync Settings", str(exc), parent=self.window)
             return
         self.settings = updated
+        self.client_secret_var.set(self.settings.get("client_secret_path", ""))
+        self.token_path_var.set(self.settings.get("token_path", ""))
         self.status_var.set("Settings saved.")
 
         if self.on_saved:

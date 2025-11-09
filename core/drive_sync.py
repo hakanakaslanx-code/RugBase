@@ -1,25 +1,28 @@
 """Google Drive synchronisation for the RugBase SQLite database."""
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 import os
 import platform
 import shutil
-import site
-import sys
-import sysconfig
-import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
+import importlib
+import site
+import sys
+import sysconfig
+import tempfile
+from stat import S_IRUSR, S_IWUSR
+
 import db
 import dependency_loader
 from core import app_paths, drive_api
+from core.dependencies import DependencyManager
 from core.hash import file_sha256
 
 DB_FILENAME = "rugbase.db"
@@ -29,7 +32,17 @@ BACKUPS_FOLDER_NAME = "RugBase_Backups"
 SETTINGS_FILENAME = "drive_sync_settings.json"
 DEFAULT_POLL_INTERVAL = 30
 TOKEN_FILENAME = "token.json"
-CREDENTIALS_FILENAME = "credentials.json"
+CREDENTIALS_FILENAME = "service_account.json"
+GOOGLE_PIP_PACKAGES: Tuple[str, ...] = (
+    "google-api-python-client",
+    "google-auth",
+    "google-auth-oauthlib",
+)
+GOOGLE_IMPORT_NAMES: Tuple[str, ...] = (
+    "googleapiclient",
+    "google.auth",
+    "google_auth_oauthlib",
+)
 
 STATUS_CONNECTED = "connected"
 STATUS_OFFLINE = "offline"
@@ -85,7 +98,7 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _default_token_path() -> str:
-    token_file = app_paths.data_path(TOKEN_FILENAME)
+    token_file = app_paths.oauth_path(TOKEN_FILENAME)
     token_file.parent.mkdir(parents=True, exist_ok=True)
     return str(token_file)
 
@@ -112,15 +125,12 @@ def _ensure_token_directory(token_path: str) -> str:
 
 
 def _credentials_storage_path(filename: str = CREDENTIALS_FILENAME) -> Path:
-    directory = app_paths.data_path("credentials")
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory / filename
+    destination = app_paths.oauth_path(filename)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return destination
 
 
 def _default_client_secret_path() -> str:
-    bundled = dependency_loader.default_credentials_path(CREDENTIALS_FILENAME)
-    if bundled:
-        return str(bundled)
     storage = _credentials_storage_path()
     return str(storage) if storage.exists() else ""
 
@@ -128,26 +138,32 @@ def _default_client_secret_path() -> str:
 def _normalise_client_secret_path(candidate: Optional[str]) -> str:
     destination = _credentials_storage_path()
     if not candidate:
-        bundled = dependency_loader.default_credentials_path(CREDENTIALS_FILENAME)
-        if bundled:
-            return str(bundled)
         return str(destination) if destination.exists() else ""
+
     source_path = Path(os.path.expanduser(str(candidate))).resolve()
     if destination.exists() and source_path == destination:
         return str(destination)
-    bundled = dependency_loader.default_credentials_path(CREDENTIALS_FILENAME)
-    if bundled and source_path == bundled.resolve():
-        return str(bundled)
     if not source_path.exists():
         raise FileNotFoundError(f"Client secret file not found: {source_path}")
     try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, destination)
+        try:
+            os.chmod(destination, S_IRUSR | S_IWUSR)
+        except OSError:
+            logger.debug("Unable to set restrictive permissions on %s", destination, exc_info=True)
     except OSError as exc:
         raise RuntimeError(
             f"Unable to copy client secret to {destination}: {exc}"
         ) from exc
     logger.info("Client secret copied to %s", destination)
     return str(destination)
+
+
+def service_account_storage_path() -> str:
+    """Return the expected storage path for the service account credentials."""
+
+    return str(_credentials_storage_path())
 
 
 _GOOGLE_AVAILABLE = False
@@ -236,22 +252,29 @@ def _ensure_google_dependencies_installed() -> Optional[str]:
     if _GOOGLE_AVAILABLE:
         return None
 
-    if dependency_loader.google_dependencies_available():
-        _GOOGLE_AVAILABLE = True
-        logger.debug("Google API client libraries detected by dependency loader")
-        return None
-
+    DependencyManager.ensure_paths()
+    DependencyManager.add_to_sys_path()
     app_paths.ensure_vendor_on_path()
-    _refresh_site_packages()
 
-    if _google_import_available():
+    if dependency_loader.google_dependencies_available() or DependencyManager.is_installed(
+        GOOGLE_IMPORT_NAMES
+    ):
         _GOOGLE_AVAILABLE = True
-        logger.debug("Google API client libraries available on sys.path")
+        logger.debug("Google API client libraries detected without installation")
         return None
 
-    warning = dependency_loader.dependency_warning()
-    logger.warning(warning)
-    return warning
+    success, _ = DependencyManager.pip_install(GOOGLE_PIP_PACKAGES)
+    if success and DependencyManager.is_installed(GOOGLE_IMPORT_NAMES):
+        _GOOGLE_AVAILABLE = True
+        logger.debug("Google API client libraries installed successfully")
+        return None
+
+    message = (
+        "Google API libs kurulamadı. Sistem politikaları (AV/İzin) veya ağ kısıtlaması"
+        " olabilir. Manuel kurulum: Tools → Open Debug Log."
+    )
+    logger.error(message)
+    return message
 
 
 def _settings_path() -> Path:
@@ -761,6 +784,7 @@ __all__ = [
     "save_settings",
     "test_connection",
     "get_poll_interval",
+    "service_account_storage_path",
     "STATUS_CONNECTED",
     "STATUS_OFFLINE",
     "STATUS_REAUTHORISE",
