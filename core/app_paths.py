@@ -25,7 +25,8 @@ def _detect_base_directory() -> Path:
 
 APP_DIR: Path = _detect_base_directory()
 CONFIG_DIR: Path = APP_DIR / "config"
-TOKENS_DIR: Path = APP_DIR / "tokens"
+CREDENTIALS_DIR: Path = APP_DIR / "credentials"
+TOKENS_DIR: Path = APP_DIR
 VENDOR_DIR: Path = APP_DIR / "vendor"
 BACKUP_DIR: Path = APP_DIR / "backups"
 LOG_DIR: Path = APP_DIR / "logs"
@@ -52,7 +53,7 @@ def ensure_app_structure() -> None:
     for directory in (
         APP_DIR,
         CONFIG_DIR,
-        TOKENS_DIR,
+        CREDENTIALS_DIR,
         BACKUP_DIR,
         LOG_DIR,
         DEPENDENCY_DIR,
@@ -85,6 +86,16 @@ def tokens_path(*parts: str) -> Path:
 
     ensure_directory(TOKENS_DIR)
     target = TOKENS_DIR.joinpath(*parts)
+    if target.parent and not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def credentials_path(*parts: str) -> Path:
+    """Return a path inside the credentials directory."""
+
+    ensure_directory(CREDENTIALS_DIR)
+    target = CREDENTIALS_DIR.joinpath(*parts)
     if target.parent and not target.parent.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
     return target
@@ -128,6 +139,7 @@ __all__ = [
     "APP_DIR",
     "CONFIG_DIR",
     "TOKENS_DIR",
+    "CREDENTIALS_DIR",
     "VENDOR_DIR",
     "BACKUP_DIR",
     "LOG_DIR",
@@ -136,6 +148,7 @@ __all__ = [
     "data_path",
     "config_path",
     "tokens_path",
+    "credentials_path",
     "logs_path",
     "dependencies_path",
     "ensure_app_structure",

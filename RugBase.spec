@@ -5,7 +5,11 @@ from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-google_hidden = collect_submodules('googleapiclient') + collect_submodules('google')
+google_hidden = (
+    collect_submodules('googleapiclient')
+    + collect_submodules('google')
+    + collect_submodules('google.oauth2')
+)
 
 
 a = Analysis(
@@ -16,19 +20,20 @@ a = Analysis(
         ('core', 'core'),
         ('ui_item_card.py', '.'),
         ('ui_main.py', '.'),
-        ('resources/wheels', 'resources/wheels'),
         (certifi.where(), 'certifi'),
     ],
     hiddenimports=[
         'googleapiclient',
         'googleapiclient.discovery',
         'googleapiclient.http',
-        'googleapiclient._auth',
+        'googleapiclient._helpers',
         'google.auth',
         'google_auth_oauthlib.flow',
         'google.oauth2.service_account',
         'google.auth.transport.requests',
         'httplib2',
+        'oauthlib.oauth2',
+        'requests',
         *google_hidden,
     ],
     hookspath=[],

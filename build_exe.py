@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import pathlib
+import subprocess
+import sys
 
 from dependency_loader import HIDDEN_IMPORTS
 
@@ -28,11 +30,26 @@ def run() -> None:
 
     data_sep = os.pathsep
 
+    check_cmd = [
+        sys.executable,
+        "-c",
+        "import googleapiclient.discovery; import google.oauth2.service_account",
+    ]
+    try:
+        subprocess.run(check_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            "Google bağımlılıkları import edilemedi. 'pip install -r requirements.txt' çalıştırın."
+        ) from exc
+
     args = [
         "--name=RugBase",
         "--onefile",
         "--windowed",
         *(_hidden_import_args()),
+        "--collect-submodules=googleapiclient",
+        "--collect-submodules=google",
+        "--collect-submodules=google.oauth2",
         f"--add-data={project_dir / 'core'}{data_sep}core",
         f"--add-data={project_dir / 'ui_item_card.py'}{data_sep}.",
         f"--add-data={project_dir / 'ui_main.py'}{data_sep}.",
