@@ -10,13 +10,13 @@ logger = logging.getLogger(__name__)
 REQUIRED_IMPORTS: Sequence[str] = (
     "googleapiclient.discovery",
     "googleapiclient.http",
+    "googleapiclient._auth",
     "googleapiclient._helpers",
     "google.oauth2.service_account",
     "google.auth.transport.requests",
     "google_auth_oauthlib.flow",
     "httplib2",
     "oauthlib.oauth2",
-    "requests",
 )
 
 _missing_imports: List[str] = []

@@ -31,6 +31,7 @@ HIDDEN_IMPORTS: Iterable[str] = (
     "googleapiclient",
     "googleapiclient.discovery",
     "googleapiclient.http",
+    "googleapiclient._auth",
     "googleapiclient._helpers",
     "google.oauth2.service_account",
     "google.auth.transport.requests",

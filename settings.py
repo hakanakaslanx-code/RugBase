@@ -1,10 +1,16 @@
 import json
+import logging
 import os
+import shutil
 from dataclasses import dataclass
 from typing import Dict, Optional
 
 import db
 import dependency_loader
+from core import app_paths
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SETTINGS_PATH = db.data_path("settings.json")
@@ -13,11 +19,15 @@ DEFAULT_SPREADSHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
 DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
 DEFAULT_WORKSHEET_TITLE = "items"
 SYNC_SETTINGS_PATH = db.data_path("sync_settings.json")
+_CREDENTIALS_TARGET = app_paths.credentials_path("credentials.json")
 _BUNDLED_CREDENTIALS = dependency_loader.default_credentials_path("credentials.json")
-if _BUNDLED_CREDENTIALS is not None:
-    DEFAULT_CREDENTIALS_PATH = str(_BUNDLED_CREDENTIALS)
-else:
-    DEFAULT_CREDENTIALS_PATH = db.data_path("credentials", "credentials.json")
+if _BUNDLED_CREDENTIALS is not None and not _CREDENTIALS_TARGET.exists():
+    try:
+        shutil.copy2(_BUNDLED_CREDENTIALS, _CREDENTIALS_TARGET)
+    except OSError as exc:  # pragma: no cover - depends on filesystem state
+        logger.debug("Bundled credentials could not be copied: %s", exc, exc_info=True)
+
+DEFAULT_CREDENTIALS_PATH = str(_CREDENTIALS_TARGET)
 
 DEFAULT_CONFIG = {
     "dymo_label": {
@@ -230,4 +240,3 @@ __all__ = [
     "load_google_sync_settings",
     "save_google_sync_settings",
 ]
-import dependency_loader
