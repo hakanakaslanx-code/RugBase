@@ -218,7 +218,8 @@ def _google_import_available() -> bool:
         import googleapiclient  # type: ignore  # noqa: F401
         import google_auth_oauthlib  # type: ignore  # noqa: F401
         import google.auth  # type: ignore  # noqa: F401
-    except ImportError:
+    except ImportError as exc:
+        logger.debug("Google API import check failed: %s", exc, exc_info=True)
         return False
     return True
 
@@ -254,6 +255,14 @@ def _ensure_google_dependencies_installed() -> None:
             )
         logger.info("Google API client libraries installed; refreshing module search paths")
         app_paths.ensure_vendor_on_path()
+        _refresh_site_packages()
+        for module in (
+            "google",
+            "googleapiclient",
+            "google_auth_oauthlib",
+            "google.auth",
+        ):
+            sys.modules.pop(module, None)
         importlib.invalidate_caches()
         if _google_import_available():
             _GOOGLE_AVAILABLE = True

@@ -20,6 +20,49 @@ from ui.sync_worker import SyncWorker
 from ui.sync_panel import SyncPanel
 
 
+class ScrollableFrame(ttk.Frame):
+    """A simple vertically scrollable container for notebook pages."""
+
+    def __init__(self, master: tk.Misc, *, padding: int = 0) -> None:
+        super().__init__(master, padding=padding)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+
+        self._scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._canvas.yview)
+        self._scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+
+        self.content = ttk.Frame(self._canvas, padding=padding)
+        self.content.columnconfigure(0, weight=1)
+
+        self._window_id = self._canvas.create_window((0, 0), window=self.content, anchor="nw")
+
+        self.content.bind("<Configure>", self._on_content_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.content.bind(sequence, self._on_mousewheel, add=True)
+            self._canvas.bind(sequence, self._on_mousewheel, add=True)
+
+    def _on_content_configure(self, event: tk.Event) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        self._canvas.itemconfigure(self._window_id, width=event.width)
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        if event.delta:
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+        elif getattr(event, "num", None) == 4:
+            self._canvas.yview_scroll(-1, "units")
+        elif getattr(event, "num", None) == 5:
+            self._canvas.yview_scroll(1, "units")
+
+
 class MainWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -37,6 +80,7 @@ class MainWindow:
         self.load_items()
         self.root.bind("<Control-l>", self.on_open_label_generator)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.minsize(1024, 640)
         self.sync_worker.start()
         self.sync_worker.sync_now()
 
@@ -55,9 +99,10 @@ class MainWindow:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        self.dashboard_frame = ttk.Frame(self.notebook, padding=12)
+        self.dashboard_container = ScrollableFrame(self.notebook, padding=12)
+        self.dashboard_frame = self.dashboard_container.content
         self.dashboard_frame.columnconfigure(0, weight=1)
-        self.notebook.add(self.dashboard_frame, text="Dashboard")
+        self.notebook.add(self.dashboard_container, text="Dashboard")
 
         sync_tab = ttk.Frame(self.notebook, padding=12)
         self.notebook.add(sync_tab, text="Sync")
