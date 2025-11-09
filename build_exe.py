@@ -17,6 +17,50 @@ def _hidden_import_args() -> list[str]:
     return args
 
 
+def _check_google_dependencies() -> bool:
+    check_cmd = [
+        sys.executable,
+        "-c",
+        "import googleapiclient.discovery; import google.oauth2.service_account",
+    ]
+    result = subprocess.run(
+        check_cmd,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.returncode == 0
+
+
+def _install_requirements(project_dir: pathlib.Path) -> None:
+    requirements = project_dir / "requirements.txt"
+    if not requirements.exists():  # pragma: no cover - defensive guard
+        raise SystemExit(
+            "requirements.txt dosyası bulunamadı. Google bağımlılıklarını manuel olarak yükleyin."
+        )
+
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-r", str(requirements)]
+    )
+
+
+def _ensure_google_dependencies(project_dir: pathlib.Path) -> None:
+    if _check_google_dependencies():
+        return
+
+    try:
+        _install_requirements(project_dir)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            "Google bağımlılıkları otomatik olarak yüklenemedi. 'pip install -r requirements.txt' komutunu manuel çalıştırın."
+        ) from exc
+
+    if not _check_google_dependencies():
+        raise SystemExit(
+            "Google bağımlılıkları import edilemedi. 'pip install -r requirements.txt' çalıştırın."
+        )
+
+
 def run() -> None:
     try:
         import PyInstaller.__main__  # type: ignore
@@ -34,17 +78,7 @@ def run() -> None:
 
     data_sep = os.pathsep
 
-    check_cmd = [
-        sys.executable,
-        "-c",
-        "import googleapiclient.discovery; import google.oauth2.service_account",
-    ]
-    try:
-        subprocess.run(check_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as exc:
-        raise SystemExit(
-            "Google bağımlılıkları import edilemedi. 'pip install -r requirements.txt' çalıştırın."
-        ) from exc
+    _ensure_google_dependencies(project_dir)
 
     args = [
         "--name=RugBase",
