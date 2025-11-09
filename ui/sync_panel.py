@@ -84,6 +84,23 @@ class SyncPanel(ttk.Frame):
             warning = dependency_warning()
             self._append_log(warning)
 
+    def apply_theme(self, palette: dict[str, str]) -> None:
+        """Apply the current palette to widgets that are not themed automatically."""
+
+        # `ttk` widgets pick up most styling changes automatically via `ttk.Style`.
+        # However, native Tk widgets such as the scrolled text control must be
+        # themed manually to remain legible in both light and dark modes.
+        self.configure(style="TFrame")
+        self.log_widget.configure(
+            background=palette["frame"],
+            foreground=palette["foreground"],
+            insertbackground=palette["foreground"],
+            selectbackground=palette["selection"],
+            selectforeground=palette["selection_text"],
+            highlightbackground=palette["border"],
+            highlightcolor=palette["border"],
+        )
+
     # ------------------------------------------------------------------
     # UI construction helpers
     # ------------------------------------------------------------------
