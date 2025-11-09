@@ -25,7 +25,7 @@ _missing_imports: List[str] = []
 def _try_import(module_name: str) -> bool:
     try:
         importlib.import_module(module_name)
-    except ImportError as exc:  # pragma: no cover - depends on environment
+    except (ImportError, FileNotFoundError) as exc:  # pragma: no cover - depends on environment
         logger.debug("[Deps] import error for %s: %s", module_name, exc, exc_info=True)
         return False
     return True

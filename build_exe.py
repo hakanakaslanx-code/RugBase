@@ -45,18 +45,19 @@ def _install_requirements(project_dir: pathlib.Path) -> None:
 
 
 def _prepare_google_dependencies(project_dir: pathlib.Path) -> None:
+    if _check_google_dependencies():
+        return
+
     try:
         _install_requirements(project_dir)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(
-            "Google bağımlılıkları yüklenemedi. 'pip install -r requirements.txt' komutunu manuel çalıştırın."
+            "Google bağımlılıkları otomatik olarak yüklenemedi. 'pip install -r requirements.txt' komutunu manuel çalıştırın."
         ) from exc
 
     if not _check_google_dependencies():
-        print(
-            "Uyarı: Google API bağımlılıkları import edilemedi. Paketleme devam edecek ancak"
-            " çalışma zamanında senkron özellikleri devre dışı kalabilir.",
-            file=sys.stderr,
+        raise SystemExit(
+            "Google bağımlılıkları import edilemedi. Paketlemeyi tekrar denemeden önce eksik kütüphaneleri kurun."
         )
 
 
