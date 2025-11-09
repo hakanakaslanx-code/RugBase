@@ -7,16 +7,13 @@ from tkinter import font as tkfont
 from typing import Optional
 
 import db
-from core import drive_sync, importer, updater
-from core.drive_sync import SyncResult
+from core import importer, updater
 from core.logging_config import get_log_path
 from core.version import __version__
 from ui_item_card import ItemCardWindow
 from ui_label_generator import LabelGeneratorWindow
 from core.excel import Workbook
 from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
-from ui.sync_settings import SyncSettingsWindow
-from ui.sync_worker import SyncWorker
 from ui.sync_panel import SyncPanel
 
 
@@ -69,20 +66,12 @@ class MainWindow:
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
         self.style = ttk.Style(self.root)
-        self.sync_status_var = tk.StringVar(value="Drive senkronu beklemede")
-        self.sync_connection_var = tk.StringVar(value="Bilinmiyor")
-        self.sync_last_sync_var = tk.StringVar(value="Henüz değil")
-        self._conflict_dialog_open = False
-        self._conflict_user_dismissed = False
-        self.sync_worker = SyncWorker(self.root, self._on_sync_status)
         self._configure_style()
         self._create_widgets()
         self.load_items()
         self.root.bind("<Control-l>", self.on_open_label_generator)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.minsize(1024, 640)
-        self.sync_worker.start()
-        self.sync_worker.sync_now()
 
     def _configure_style(self) -> None:
         try:
@@ -177,41 +166,16 @@ class MainWindow:
         )
         self.export_xlsx_button.pack(side=tk.LEFT, padx=(10, 0))
 
-        self.drive_sync_frame = ttk.LabelFrame(self.dashboard_frame, text="Drive Sync", padding=12)
-        self.drive_sync_frame.pack(fill=tk.X, pady=(0, 10))
-        self.drive_sync_frame.columnconfigure(0, weight=1)
-
-        sync_status_frame = ttk.Frame(self.drive_sync_frame)
-        sync_status_frame.grid(row=0, column=0, sticky="nsew")
-        sync_status_frame.columnconfigure(1, weight=1)
-
-        ttk.Label(sync_status_frame, text="Bağlantı durumu:").grid(row=0, column=0, sticky=tk.W)
-        ttk.Label(sync_status_frame, textvariable=self.sync_connection_var).grid(row=0, column=1, sticky=tk.W)
-
-        ttk.Label(sync_status_frame, text="Son senkron:").grid(row=1, column=0, sticky=tk.W, pady=(4, 0))
-        ttk.Label(sync_status_frame, textvariable=self.sync_last_sync_var).grid(row=1, column=1, sticky=tk.W, pady=(4, 0))
-
         ttk.Label(
-            sync_status_frame,
-            textvariable=self.sync_status_var,
-            foreground="#0b5394",
-        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
-
-        sync_button_frame = ttk.Frame(self.drive_sync_frame)
-        sync_button_frame.grid(row=0, column=1, sticky=tk.E)
-
-        ttk.Button(sync_button_frame, text="Şimdi Senkronize Et", command=self.on_sync_now).grid(
-            row=0, column=0, padx=(0, 8), pady=2
-        )
-        ttk.Button(sync_button_frame, text="Yedekle", command=self.on_backup_now).grid(
-            row=0, column=1, padx=(0, 8), pady=2
-        )
-        ttk.Button(sync_button_frame, text="Geri Yükle", command=self.on_restore_now).grid(
-            row=0, column=2, padx=(0, 8), pady=2
-        )
-        ttk.Button(sync_button_frame, text="Bağlantıyı Sıfırla", command=self.on_reset_sync).grid(
-            row=0, column=3, pady=2
-        )
+            self.dashboard_frame,
+            text=(
+                "Google Drive senkronizasyonu kaldırıldı."
+                " Excel/Sheets senkronizasyonunu kullanmak için Sync sekmesine geçebilirsiniz."
+            ),
+            foreground="#555555",
+            wraplength=720,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, pady=(0, 10))
 
         ttk.Separator(self.dashboard_frame).pack(fill=tk.X, pady=(0, 10))
 
@@ -373,35 +337,6 @@ class MainWindow:
 
         ItemCardWindow(self.root, item_id, on_save=self.load_items)
 
-    def open_sync_settings(self) -> None:
-        def _after_save() -> None:
-            self.sync_status_var.set("Sync settings saved. Running sync…")
-            self.sync_worker.sync_now()
-
-        SyncSettingsWindow(self.root, on_saved=_after_save)
-
-    def on_sync_now(self) -> None:
-        self._conflict_user_dismissed = False
-        self.sync_status_var.set("Senkronizasyon başlatılıyor…")
-        self.sync_worker.sync_now()
-
-    def on_backup_now(self) -> None:
-        self.sync_status_var.set("Drive'e yedek yükleniyor…")
-        self.sync_worker.backup_now()
-
-    def on_restore_now(self) -> None:
-        self.sync_status_var.set("Drive'dan geri yükleme başlatılıyor…")
-        self.sync_worker.restore_now()
-
-    def on_reset_sync(self) -> None:
-        if not messagebox.askyesno(
-            "Drive Sync",
-            "Bağlantıyı sıfırlamak mevcut yetkilendirmeyi kaldırır. Devam edilsin mi?",
-        ):
-            return
-        self.sync_status_var.set("Bağlantı sıfırlanıyor…")
-        self.sync_worker.reset_connection()
-
     def on_delete_item(self) -> None:
         item_id = self.get_selected_item_id()
         if not item_id:
@@ -562,91 +497,9 @@ class MainWindow:
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
         tools_menu = tk.Menu(menubar, tearoff=0)
-        tools_menu.add_command(label="Sync Settings…", command=self.open_sync_settings)
-        tools_menu.add_command(label="Sync Now", command=self.on_sync_now)
-        tools_menu.add_command(label="Backup Now", command=self.on_backup_now)
-        tools_menu.add_command(label="Restore from Drive", command=self.on_restore_now)
-        tools_menu.add_command(label="Reset Sync Connection", command=self.on_reset_sync)
-        tools_menu.add_separator()
         tools_menu.add_command(label="Open Debug Log", command=self.open_debug_log)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         self.root.config(menu=menubar)
-
-    def _update_connection_status(self, status: str) -> None:
-        mapping = {
-            drive_sync.STATUS_CONNECTED: "Bağlı",
-            drive_sync.STATUS_OFFLINE: "Çevrimdışı",
-            drive_sync.STATUS_REAUTHORISE: "Yeniden yetkilendirme gerekli",
-            drive_sync.STATUS_CONFLICT: "Çakışma",
-        }
-        self.sync_connection_var.set(mapping.get(status, "Bilinmiyor"))
-
-    def _format_last_sync(self, value: str) -> str:
-        if not value:
-            return "Henüz değil"
-        try:
-            iso_value = value[:-1] + "+00:00" if value.endswith("Z") else value
-            timestamp = datetime.fromisoformat(iso_value)
-            if timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=datetime.now().astimezone().tzinfo)
-            local_dt = timestamp.astimezone()
-            return local_dt.strftime("%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            return value
-
-    def _prompt_conflict_resolution(self, result: SyncResult) -> None:
-        if self._conflict_dialog_open or self._conflict_user_dismissed:
-            return
-        self._conflict_dialog_open = True
-        backup_info = f"\nYerel yedek: {result.backup_path}" if result.backup_path else ""
-        try:
-            response = messagebox.askyesnocancel(
-                "Drive Sync Çakışması",
-                (
-                    "Hem yerel hem de Google Drive veritabanı değişti."
-                    f"{backup_info}\n\n"
-                    "Evet: Yerel veritabanını Drive'a yükle.\n"
-                    "Hayır: Drive sürümünü indir.\n"
-                    "İptal: Daha sonra karar ver."
-                ),
-                parent=self.root,
-            )
-        finally:
-            self._conflict_dialog_open = False
-        if response is None:
-            self._conflict_user_dismissed = True
-            return
-        if response:
-            self.sync_status_var.set("Yerel sürüm Drive'a yükleniyor…")
-            self.sync_worker.resolve_conflict(True)
-        else:
-            self.sync_status_var.set("Drive sürümü indiriliyor…")
-            self.sync_worker.resolve_conflict(False)
-
-    def _on_sync_status(self, message: str, result: Optional[SyncResult]) -> None:
-        self.sync_status_var.set(message)
-        status_code = getattr(result, "status", None)
-        if status_code:
-            self._update_connection_status(status_code)
-        if result and result.last_sync:
-            self.sync_last_sync_var.set(self._format_last_sync(result.last_sync))
-        elif result and result.action == "reset":
-            self.sync_last_sync_var.set("Henüz değil")
-
-        if not (result and result.requires_resolution):
-            self._conflict_user_dismissed = False
-        if result and result.requires_resolution:
-            self._update_connection_status(drive_sync.STATUS_CONFLICT)
-            self._prompt_conflict_resolution(result)
-            return
-
-        new_conflicts = getattr(result, "new_conflicts", 0) if result else 0
-        if new_conflicts:
-            messagebox.showwarning(
-                "Sync Conflicts",
-                f"{new_conflicts} new conflict(s) detected. Review them in Sync Settings.",
-                parent=self.root,
-            )
 
     def open_debug_log(self) -> None:
         log_path = get_log_path()
@@ -689,7 +542,6 @@ class MainWindow:
         )
 
     def _on_close(self) -> None:
-        self.sync_worker.stop()
         if hasattr(self, "sync_panel"):
             try:
                 self.sync_panel.shutdown()
