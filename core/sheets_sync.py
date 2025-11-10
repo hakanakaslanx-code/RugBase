@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,6 +43,8 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optio
 import db
 from core import app_paths
 from core.version import __version__ as APP_VERSION
+from core.conflicts import record as record_conflict
+from core.offline_queue import OutboxQueue
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,15 @@ except ImportError:  # pragma: no cover - runtime guard
     GOOGLE_API_AVAILABLE = False
 else:  # pragma: no cover - simple attribute assignment
     GOOGLE_API_AVAILABLE = True
+
+
+# ---------------------------------------------------------------------------
+# Module level helpers/state
+# ---------------------------------------------------------------------------
+_OUTBOX = OutboxQueue()
+_DEBOUNCE_WINDOW = 3.0
+_DEBOUNCE_LOCK = threading.Lock()
+_DEBOUNCE_STATE: Dict[str, float] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +209,26 @@ class SheetRow:
 
     def as_list(self) -> List[str]:
         return [self.values.get(header, "") for header in HEADERS]
+
+
+def _debounce_row(row_id: str) -> bool:
+    now = time.monotonic()
+    with _DEBOUNCE_LOCK:
+        last = _DEBOUNCE_STATE.get(row_id)
+        if last is not None and now - last < _DEBOUNCE_WINDOW:
+            return True
+        _DEBOUNCE_STATE[row_id] = now
+    return False
+
+
+def _queue_failed_rows(rows: Iterable[SheetRow]) -> None:
+    entries = []
+    for row in rows:
+        if not row.row_id:
+            continue
+        entries.append({"row_id": row.row_id})
+    if entries:
+        _OUTBOX.append(entries)
 
 
 # ---------------------------------------------------------------------------
@@ -782,13 +814,53 @@ def resolve_conflict(
     *,
     backup_prefix: str = "sheet-conflict",
 ) -> Dict[str, Any]:
-    """Return the winning row using last-write-wins and back up the other."""
+    """Merge conflicting rows field-by-field using UpdatedAt timestamps."""
 
-    local_ts = _parse_timestamp(local_row.get("UpdatedAt"))
-    remote_ts = _parse_timestamp(remote_row.get("UpdatedAt"))
     backup_dir = app_paths.ensure_directory(app_paths.BACKUP_DIR)
     timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
     row_id = remote_row.get("RowID") or local_row.get("RowID") or "unknown"
+    local_ts = _parse_timestamp(local_row.get("UpdatedAt"))
+    remote_ts = _parse_timestamp(remote_row.get("UpdatedAt"))
+
+    merged = dict(remote_row)
+    field_diffs: Dict[str, Tuple[str, str]] = {}
+
+    for header in HEADERS:
+        if header in {"RowID", "Hash", "UpdatedAt"}:
+            continue
+        local_value = local_row.get(header)
+        remote_value = remote_row.get(header)
+        if str(local_value) == str(remote_value):
+            merged[header] = remote_value
+            continue
+        if local_ts and remote_ts:
+            if local_ts > remote_ts:
+                merged[header] = local_value
+                continue
+            if remote_ts > local_ts:
+                merged[header] = remote_value
+                continue
+        elif local_ts and not remote_ts:
+            merged[header] = local_value
+            continue
+        elif remote_ts and not local_ts:
+            merged[header] = remote_value
+            continue
+
+        # Equal or missing timestamps – favour remote but record the difference
+        merged[header] = remote_value
+        field_diffs[header] = (str(local_value or ""), str(remote_value or ""))
+
+    chosen_ts: Optional[datetime] = None
+    if local_ts and remote_ts:
+        chosen_ts = max(local_ts, remote_ts)
+    else:
+        chosen_ts = local_ts or remote_ts
+    if field_diffs:
+        chosen_ts = datetime.utcnow().replace(microsecond=0, tzinfo=timezone.utc)
+
+    if chosen_ts:
+        merged["UpdatedAt"] = chosen_ts.isoformat().replace("+00:00", "Z")
 
     def _backup(row: Mapping[str, Any], suffix: str) -> None:
         path = backup_dir / f"{backup_prefix}-{row_id}-{suffix}-{timestamp}.bak.json"
@@ -798,15 +870,12 @@ def resolve_conflict(
         except OSError:  # pragma: no cover - filesystem guard
             logger.warning("Çakışma yedeği yazılamadı: %s", path, exc_info=True)
 
-    if remote_ts and (not local_ts or remote_ts >= local_ts):
+    if field_diffs:
         _backup(local_row, "local")
-        return dict(remote_row)
-    if local_ts and (not remote_ts or local_ts > remote_ts):
         _backup(remote_row, "remote")
-        return dict(local_row)
-    # Tie breaker: prefer remote row to ensure convergence
-    _backup(local_row, "local")
-    return dict(remote_row)
+        record_conflict(row_id, field_diffs, context={"strategy": "field_merge"})
+
+    return merged
 
 
 def _sheet_row_to_db_payload(row: Mapping[str, Any]) -> Dict[str, Any]:
@@ -838,6 +907,58 @@ def _sheet_row_to_db_payload(row: Mapping[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _flush_outbox(
+    service,
+    parsed_id: str,
+    worksheet_title: str,
+    *,
+    db_path: Optional[str],
+    log_callback: Optional[Callable[[str], None]] = None,
+) -> int:
+    if not _OUTBOX.path.exists():
+        return 0
+
+    remote_rows = _read_remote_rows(service, parsed_id, worksheet_title)
+    remote_index: Dict[str, SheetRow] = {row.row_id: row for row in remote_rows}
+    next_row_index = max((row.row_index or 1 for row in remote_rows), default=1) + 1
+
+    with _connect(db_path) as conn:
+        local_index = {row.row_id: row for row in _fetch_local_rows(conn)}
+
+    def _replay(entry: Mapping[str, object]) -> None:
+        nonlocal next_row_index
+        row_id = str(entry.get("row_id") or "")
+        if not row_id:
+            return
+        row = local_index.get(row_id)
+        if row is None:
+            return
+        target_index: Optional[int] = None
+        existing = remote_index.get(row_id)
+        if existing and existing.row_index is not None:
+            target_index = existing.row_index
+        if target_index is None:
+            target_index = next_row_index
+            next_row_index += 1
+            remote_index[row_id] = SheetRow(
+                row_id=row.row_id,
+                values=dict(row.values),
+                hash=row.hash,
+                row_index=target_index,
+            )
+        a1_range = f"{worksheet_title}!{_sheet_range(target_index)}"
+        _values_batch_update(
+            service,
+            parsed_id,
+            [{"range": a1_range, "values": [row.as_list()]}],
+        )
+        if log_callback:
+            log_callback(f"Outbox kaydı işlendi: {row_id}")
+
+    processed = _OUTBOX.drain(_replay)
+    return processed
+
+
 # ---------------------------------------------------------------------------
 # Public sync operations
 # ---------------------------------------------------------------------------
@@ -858,25 +979,53 @@ def push(
     service = get_client(credential_path)
     worksheet_id = _ensure_sheet_structure(service, parsed_id, worksheet_title)
 
+    processed_outbox = 0
+    try:
+        processed_outbox = _flush_outbox(
+            service,
+            parsed_id,
+            worksheet_title,
+            db_path=db_path,
+            log_callback=log_callback,
+        )
+    except Exception as exc:  # pragma: no cover - network/IO guard
+        raise SpreadsheetAccessError(f"Outbox kuyruğu gönderilemedi: {exc}") from exc
+    if processed_outbox and log_callback:
+        log_callback(f"Bekleyen {processed_outbox} satır gönderildi.")
+
     start = time.monotonic()
     with _connect(db_path) as conn:
         previous_hashes = _load_previous_hashes(conn)
         local_rows = _fetch_local_rows(conn)
 
-    new_rows, changed_rows = detect_local_deltas(local_rows, previous_hashes)
+    detected_new_rows, changed_rows = detect_local_deltas(local_rows, previous_hashes)
 
     remote_rows = _read_remote_rows(service, parsed_id, worksheet_title)
     remote_index: Dict[str, SheetRow] = {row.row_id: row for row in remote_rows}
+
+    new_rows: List[SheetRow] = []
+    for row in detected_new_rows:
+        if _debounce_row(row.row_id):
+            if log_callback:
+                log_callback(f"{row.row_id} kaydı debounce nedeniyle bekletildi.")
+            continue
+        new_rows.append(row)
+
     updates: List[Tuple[int, SheetRow]] = []
     for row in changed_rows:
+        if _debounce_row(row.row_id):
+            if log_callback:
+                log_callback(f"{row.row_id} kaydı debounce nedeniyle atlandı.")
+            continue
         remote = remote_index.get(row.row_id)
-        row.row_index = remote.row_index if remote else row.row_index
-        if row.row_index is None and remote:
-            row.row_index = remote.row_index
-        if row.row_index is None:
+        target_index = remote.row_index if remote else row.row_index
+        if target_index is None and remote:
+            target_index = remote.row_index
+        if target_index is None:
             new_rows.append(row)
         else:
-            updates.append((row.row_index, row))
+            row.row_index = target_index
+            updates.append((target_index, row))
 
     # Determine append start row
     next_row_index = max((row.row_index or 1 for row in remote_rows), default=1) + 1
@@ -891,7 +1040,13 @@ def push(
             for row_index, row in batch:
                 a1_range = f"{worksheet_title}!{_sheet_range(row_index)}"
                 data.append({"range": a1_range, "values": [row.as_list()]})
-            _, retries = _values_batch_update(service, parsed_id, data)
+            try:
+                _, retries = _values_batch_update(service, parsed_id, data)
+            except Exception as exc:  # pragma: no cover - network/IO guard
+                _queue_failed_rows(row for _, row in batch)
+                raise SpreadsheetAccessError(
+                    f"Sheets güncellemesi başarısız: {exc}"
+                ) from exc
             total_written += len(batch)
             total_retries += retries
             if log_callback:
@@ -912,7 +1067,13 @@ def push(
                     }
                 )
                 next_row_index += 1
-            _, retries = _values_batch_update(service, parsed_id, data)
+            try:
+                _, retries = _values_batch_update(service, parsed_id, data)
+            except Exception as exc:  # pragma: no cover - network/IO guard
+                _queue_failed_rows(batch)
+                raise SpreadsheetAccessError(
+                    f"Sheets ekleme işlemi başarısız: {exc}"
+                ) from exc
             total_written += len(batch)
             total_retries += retries
             if log_callback:
@@ -1031,6 +1192,42 @@ def pull(
     return {"applied": applied, "total_remote": len(remote_rows)}
 
 
+def latest_remote_updated_at(
+    service,
+    spreadsheet_id: str,
+    worksheet_title: str = DEFAULT_WORKSHEET_TITLE,
+) -> Optional[str]:
+    parsed_id = parse_spreadsheet_id(spreadsheet_id)
+    if not parsed_id:
+        raise SpreadsheetAccessError("Geçerli bir Sheet ID gerekli.")
+
+    try:
+        updated_index = HEADERS.index("UpdatedAt") + 1
+    except ValueError:
+        return None
+    column = _column_a1(updated_index)
+    range_spec = f"{worksheet_title}!{column}2:{column}"
+
+    response = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=parsed_id, range=range_spec)
+        .execute()
+    )
+
+    values = response.get("values", []) if isinstance(response, dict) else []
+    latest: Optional[datetime] = None
+    for row in values:
+        if not row:
+            continue
+        candidate = _parse_timestamp(row[0])
+        if candidate and (latest is None or candidate > latest):
+            latest = candidate
+    if latest is None:
+        return None
+    return latest.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def health_check(
     spreadsheet_id: str,
     credential_path: str,
@@ -1087,4 +1284,5 @@ __all__ = [
     "CredentialsFileNotFoundError",
     "CredentialsFileInvalidError",
     "SpreadsheetAccessError",
+    "latest_remote_updated_at",
 ]
