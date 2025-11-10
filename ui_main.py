@@ -363,8 +363,8 @@ class MainWindow:
         ttk.Label(
             self.dashboard_frame,
             text=(
-                "Google Drive senkronizasyonu kaldırıldı."
-                " Excel/Sheets senkronizasyonunu kullanmak için Sync sekmesine geçebilirsiniz."
+                "Google Drive synchronization has been removed."
+                " Switch to the Sync tab to use Excel/Sheets synchronization."
             ),
             style="Hint.TLabel",
             wraplength=720,
@@ -1307,7 +1307,7 @@ class MarkSoldDialog:
         except Exception as exc:
             messagebox.showerror(
                 "Data Folder",
-                f"Klasör açılamadı: {exc}\n{path}",
+                f"Folder could not be opened: {exc}\n{path}",
                 parent=self.root,
             )
 

@@ -143,7 +143,7 @@ class SyncPanel(ttk.Frame):
         self.status_banner.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.status_banner.grid_remove()
 
-        form = ttk.LabelFrame(self, text="Google Sheets Ayarları", padding=12)
+        form = ttk.LabelFrame(self, text="Google Sheets Settings", padding=12)
         form.grid(row=1, column=0, sticky="nsew")
         form.columnconfigure(1, weight=1)
 
@@ -152,10 +152,10 @@ class SyncPanel(ttk.Frame):
         self.spreadsheet_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6))
         self.spreadsheet_entry.bind("<FocusOut>", self._on_spreadsheet_focus_out)
 
-        ttk.Label(form, text="Servis hesabı e-postası").grid(row=1, column=0, sticky=tk.W, pady=6)
+        ttk.Label(form, text="Service account email").grid(row=1, column=0, sticky=tk.W, pady=6)
         ttk.Entry(form, textvariable=self.service_email_var).grid(row=1, column=1, sticky="ew", pady=6)
 
-        ttk.Label(form, text="Çalışma sayfası adı").grid(row=2, column=0, sticky=tk.W, pady=6)
+        ttk.Label(form, text="Worksheet name").grid(row=2, column=0, sticky=tk.W, pady=6)
         self.worksheet_entry = ttk.Entry(form, textvariable=self.worksheet_var)
         self.worksheet_entry.grid(row=2, column=1, sticky="ew", pady=6)
         self.worksheet_entry.bind("<FocusOut>", self._on_worksheet_focus_out)
@@ -167,7 +167,7 @@ class SyncPanel(ttk.Frame):
 
         self.choose_button = ttk.Button(
             credentials_frame,
-            text="Service Account JSON seç",
+            text="Choose Service Account JSON",
             command=self._on_choose_credentials,
         )
         self.choose_button.grid(row=0, column=0, padx=(0, 6))
@@ -210,7 +210,7 @@ class SyncPanel(ttk.Frame):
         )
         self.logs_button.grid(row=0, column=3, sticky=tk.W)
 
-        log_frame = ttk.LabelFrame(self, text="Durum Günlüğü", padding=12)
+        log_frame = ttk.LabelFrame(self, text="Status Log", padding=12)
         log_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
@@ -218,7 +218,7 @@ class SyncPanel(ttk.Frame):
         self.log_widget = scrolledtext.ScrolledText(log_frame, width=80, height=16, state="disabled")
         self.log_widget.grid(row=0, column=0, sticky="nsew")
 
-        conflict_frame = ttk.LabelFrame(self, text="Çakışmalar", padding=12)
+        conflict_frame = ttk.LabelFrame(self, text="Conflicts", padding=12)
         conflict_frame.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         conflict_frame.columnconfigure(0, weight=1)
 
@@ -244,7 +244,7 @@ class SyncPanel(ttk.Frame):
 
     def _on_choose_credentials(self) -> None:
         file_path = filedialog.askopenfilename(
-            title="Kimlik dosyasını seçin",
+            title="Select credentials file",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
         )
         if not file_path:
@@ -256,8 +256,8 @@ class SyncPanel(ttk.Frame):
             shutil.copy2(file_path, target_path)
         except OSError as exc:
             messagebox.showerror(
-                "Kimlik Dosyası",
-                f"Kimlik dosyası kopyalanamadı: {exc}",
+                "Credentials File",
+                f"Credentials file could not be copied: {exc}",
                 parent=self.winfo_toplevel(),
             )
             return
@@ -266,7 +266,7 @@ class SyncPanel(ttk.Frame):
         self._settings.credential_path = str(target_path)
         self._persist_settings()
         self._update_credentials_state()
-        self._append_log(f"Kimlik dosyası {target_path} konumuna kopyalandı.")
+        self._append_log(f"Credentials file copied to {target_path}.")
         self._update_button_states()
 
     def _on_full_push(self) -> None:
@@ -286,12 +286,12 @@ class SyncPanel(ttk.Frame):
     # ------------------------------------------------------------------
     def _enqueue_task(self, label: str, task_callable: Callable[[], object]) -> None:
         if self._busy_task:
-            self._append_log("Devam eden bir görev tamamlanana kadar bekleyin.")
+            self._append_log("Wait until the current task finishes.")
             return
         if label != "logs" and not self._credentials_exist():
             messagebox.showinfo(
                 "Google Sheets",
-                "Lütfen önce kimlik dosyasını seçin.",
+                "Please select the credentials file first.",
                 parent=self.winfo_toplevel(),
             )
             return
@@ -314,7 +314,7 @@ class SyncPanel(ttk.Frame):
     def _handle_task_error(self, label: str, error: Exception) -> None:
         self._busy_task = None
         self._update_button_states()
-        self._append_log(f"{label} görevi hata verdi: {error}")
+        self._append_log(f"Task {label} failed: {error}")
 
     def _handle_task_result(self, label: str, result: Optional[object]) -> None:
         self._busy_task = None
@@ -322,21 +322,21 @@ class SyncPanel(ttk.Frame):
         if isinstance(result, dict):
             if label == "push":
                 self._append_log(
-                    "Full Push tamamlandı: "
-                    f"{result.get('new', 0)} yeni, {result.get('changed', 0)} güncelleme."
+                    "Full Push completed: "
+                    f"{result.get('new', 0)} new, {result.get('changed', 0)} updates."
                 )
             elif label == "pull":
                 self._append_log(
-                    "Pull Updates tamamlandı: "
-                    f"{result.get('applied', 0)} satır uygulandı (toplam {result.get('total_remote', 0)})."
+                    "Pull Updates completed: "
+                    f"{result.get('applied', 0)} rows applied (total {result.get('total_remote', 0)})."
                 )
             elif label == "health":
                 details = ", ".join(
                     f"{key}={value}" for key, value in sorted(result.items())
                 )
-                self._append_log(f"Health Check tamamlandı: {details}")
+                self._append_log(f"Health Check completed: {details}")
         elif isinstance(result, str) and label == "logs":
-            self._append_log(f"Log dosyası açıldı: {result}")
+            self._append_log(f"Log file opened: {result}")
 
     # ------------------------------------------------------------------
     # Task implementations
@@ -410,9 +410,9 @@ class SyncPanel(ttk.Frame):
 
     def _update_credentials_state(self) -> None:
         if self._credentials_exist():
-            self.credentials_status_var.set("Bulundu")
+            self.credentials_status_var.set("Available")
         else:
-            self.credentials_status_var.set("Eksik")
+            self.credentials_status_var.set("Missing")
 
     def _update_button_states(self) -> None:
         disabled = bool(self._busy_task)
@@ -437,7 +437,7 @@ class SyncPanel(ttk.Frame):
     def _update_auto_status(self, status: str, payload: dict[str, object]) -> None:
         reason = payload.get("reason") if isinstance(payload, dict) else None
         if status == "disabled" and reason == "dependencies":
-            self.status_var.set("Senkron devre dışı: bağımlılıklar eksik")
+            self.status_var.set("Sync disabled: dependencies missing")
             self.status_banner.grid()
         else:
             self.status_var.set("")
@@ -454,16 +454,16 @@ class SyncPanel(ttk.Frame):
             )
             if pull_applied or push_total:
                 self._append_log(
-                    f"Otomatik senkron tamamlandı: pull={pull_applied}, push={push_total}."
+                    f"Automatic sync completed: pull={pull_applied}, push={push_total}."
                 )
         elif status == "offline" and status != self._last_auto_status:
             message = payload.get("message") if isinstance(payload, dict) else None
-            detail = message or "Google Sheets'e ulaşılamadı"
-            self._append_log(f"Otomatik senkron çevrimdışı: {detail}")
+            detail = message or "Google Sheets unreachable"
+            self._append_log(f"Automatic sync offline: {detail}")
         elif status == "error" and status != self._last_auto_status:
             message = payload.get("message") if isinstance(payload, dict) else None
-            detail = message or "beklenmeyen durum"
-            self._append_log(f"Otomatik senkron hatası: {detail}")
+            detail = message or "unexpected condition"
+            self._append_log(f"Automatic sync error: {detail}")
 
         self._last_auto_status = status
 
@@ -491,7 +491,7 @@ class SyncPanel(ttk.Frame):
                 self.conflict_list.insert(tk.END, summary)
 
     def _initial_health_check(self) -> None:
-        self._append_log("Bağlantı ve yetkiler doğrulanıyor...")
+        self._append_log("Verifying connectivity and permissions...")
         self._enqueue_task("health", self._task_health)
 
     def destroy(self) -> None:  # pragma: no cover - Tkinter lifecycle

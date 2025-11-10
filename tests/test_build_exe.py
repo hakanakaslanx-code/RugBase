@@ -107,7 +107,7 @@ def test_run_raises_when_google_deps_still_missing(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         build_exe.run()
 
-    assert "Google bağımlılıkları import edilemedi" in str(excinfo.value)
+    assert "Google dependencies could not be imported" in str(excinfo.value)
 
 
 def test_run_raises_when_install_fails(monkeypatch):
@@ -122,4 +122,4 @@ def test_run_raises_when_install_fails(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         build_exe.run()
 
-    assert "otomatik olarak yüklenemedi" in str(excinfo.value)
+    assert "could not be installed automatically" in str(excinfo.value)

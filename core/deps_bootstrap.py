@@ -49,11 +49,11 @@ def ensure_google_deps(force_reinstall: bool = False) -> bool:
     _missing_imports = check_google_deps()
     if _missing_imports:
         logger.warning(
-            "[Deps] Senkron modülü bağımlılıkları eksik: %s",
+            "[Deps] Sync module dependencies missing: %s",
             ", ".join(_missing_imports),
         )
         return False
-    logger.info("[Deps] Google senkronizasyon bağımlılıkları hazır.")
+    logger.info("[Deps] Google sync dependencies ready.")
     return True
 
 

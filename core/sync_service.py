@@ -130,8 +130,8 @@ class SyncService:
 
         if not sheets_sync.is_api_available():
             raise sheets_sync.MissingDependencyError(
-                "google-api-python-client bulunamadı. Tools → Geliştirici Logu üzerinden"
-                " pydeps klasörünü doğrulayın."
+                "google-api-python-client was not found. Verify the pydeps folder via"
+                " Tools → Developer Log."
             )
 
         missing_imports = []
@@ -148,10 +148,10 @@ class SyncService:
 
         if missing_imports:
             raise sheets_sync.MissingDependencyError(
-                "Google API import testi başarısız: " + "; ".join(missing_imports)
+                "Google API import test failed: " + "; ".join(missing_imports)
             )
 
-        report["imports"] = "Google API kütüphaneleri başarıyla yüklendi."
+        report["imports"] = "Google API libraries loaded successfully."
 
         client = sheets_sync.get_client(settings.credential_path)
         sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
@@ -169,15 +169,15 @@ class SyncService:
             )
         except sheets_sync.HttpError as exc:  # type: ignore[attr-defined]
             raise sheets_sync.SpreadsheetAccessError(
-                f"Sheets 'values.get' testi başarısız: {exc}"
+                f"Sheets 'values.get' test failed: {exc}"
             ) from exc
 
         values = result.get("values", []) if isinstance(result, dict) else []
         first_value = values[0][0] if values and values[0] else ""
-        report["values_get"] = f"A1 hücresi okundu: '{first_value}'."
+        report["values_get"] = f"Cell A1 read: '{first_value}'."
 
         sheets_sync.verify_roundtrip(client, settings.spreadsheet_id, settings.worksheet_title)
-        report["roundtrip"] = "Sheets yaz/oku doğrulaması tamamlandı."
+        report["roundtrip"] = "Sheets write/read verification completed."
 
         return report
 
@@ -208,14 +208,14 @@ class SyncService:
             remote = _normalise_remote_row(raw_row)
             item_id = remote.get("id")
             if not item_id:
-                self._log("Sheets satırı kimlik içermiyor; atlandı.")
+                self._log("Sheets row missing identifier; skipped.")
                 stats["skipped"] += 1
                 continue
 
             local = db.fetch_item_for_sync(item_id)
             if not local:
                 db.apply_remote_sync_row(remote)
-                self._log(f"Sheets -> SQLite: yeni kayıt eklendi ({item_id})")
+                self._log(f"Sheets -> SQLite: new record added ({item_id})")
                 stats["inserted"] += 1
                 continue
 
@@ -223,7 +223,7 @@ class SyncService:
             local_version = int(local.get("version") or 1)
             if remote_version > local_version:
                 db.apply_remote_sync_row(remote)
-                self._log(f"Sheets -> SQLite: güncellendi ({item_id})")
+                self._log(f"Sheets -> SQLite: updated ({item_id})")
                 stats["updated"] += 1
                 continue
 
@@ -236,7 +236,7 @@ class SyncService:
             if remote_time and local_time:
                 if remote_time > local_time:
                     db.apply_remote_sync_row(remote)
-                    self._log(f"Sheets -> SQLite: güncellendi ({item_id})")
+                    self._log(f"Sheets -> SQLite: updated ({item_id})")
                     stats["updated"] += 1
                     continue
                 if remote_time < local_time:
@@ -250,14 +250,14 @@ class SyncService:
             decision = self._resolve_conflict(local, remote)
             if decision == "remote":
                 db.apply_remote_sync_row(remote)
-                self._log(f"Çakışma çözümü: Sheets verisi kabul edildi ({item_id})")
+                self._log(f"Conflict resolution: Sheets data accepted ({item_id})")
                 stats["updated"] += 1
             elif decision == "local":
                 db.bump_item_version(item_id)
-                self._log(f"Çakışma çözümü: Yerel veri korundu ({item_id})")
+                self._log(f"Conflict resolution: local data retained ({item_id})")
                 stats["skipped"] += 1
             else:
-                self._log(f"Çakışma çözümü: işlem atlandı ({item_id})")
+                self._log(f"Conflict resolution: action skipped ({item_id})")
                 stats["conflicts"] += 1
 
         self._persist_metadata(client, settings)
@@ -287,14 +287,14 @@ class SyncService:
 
             if not remote:
                 pending_updates.append(_prepare_sheet_row(local))
-                self._log(f"SQLite -> Sheets: yeni kayıt gönderilecek ({item_id})")
+                self._log(f"SQLite -> Sheets: new record queued ({item_id})")
                 stats["inserted"] += 1
                 continue
 
             remote_version = remote.get("version", 1)
             if local_version > remote_version:
                 pending_updates.append(_prepare_sheet_row(local))
-                self._log(f"SQLite -> Sheets: güncelleme planlandı ({item_id})")
+                self._log(f"SQLite -> Sheets: update scheduled ({item_id})")
                 stats["updated"] += 1
                 continue
             if local_version < remote_version:
@@ -306,7 +306,7 @@ class SyncService:
             if remote_time and local_time:
                 if local_time > remote_time:
                     pending_updates.append(_prepare_sheet_row(local))
-                    self._log(f"SQLite -> Sheets: güncelleme planlandı ({item_id})")
+                    self._log(f"SQLite -> Sheets: update scheduled ({item_id})")
                     stats["updated"] += 1
                     continue
                 if local_time < remote_time:
@@ -320,14 +320,14 @@ class SyncService:
             decision = self._resolve_conflict(local, remote)
             if decision == "local":
                 pending_updates.append(_prepare_sheet_row(local))
-                self._log(f"Çakışma çözümü: Yerel veri Sheets'e gönderilecek ({item_id})")
+                self._log(f"Conflict resolution: local data will be sent to Sheets ({item_id})")
                 stats["updated"] += 1
             elif decision == "remote":
                 db.apply_remote_sync_row(remote)
-                self._log(f"Çakışma çözümü: Sheets verisi korundu ({item_id})")
+                self._log(f"Conflict resolution: Sheets data retained ({item_id})")
                 stats["skipped"] += 1
             else:
-                self._log(f"Çakışma çözümü: işlem atlandı ({item_id})")
+                self._log(f"Conflict resolution: action skipped ({item_id})")
                 stats["conflicts"] += 1
 
         if pending_updates:
@@ -363,7 +363,7 @@ class SyncService:
                 metadata.get("sha256", ""),
             )
         except sheets_sync.SheetsSyncError as exc:
-            self._log(f"Metadata güncellenemedi: {exc}")
+            self._log(f"Metadata could not be updated: {exc}")
 
     def _log(self, message: str) -> None:
         if self._log_callback:
