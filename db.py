@@ -702,6 +702,22 @@ def fetch_items_for_sync_snapshot() -> List[Dict[str, Any]]:
     return [_row_to_sync_payload(row) for row in rows]
 
 
+def get_max_item_updated_at() -> Optional[str]:
+    """Return the most recent ``updated_at`` value tracked by the items table."""
+
+    query = "SELECT MAX(updated_at) FROM item"
+    with get_connection() as conn:
+        cursor = conn.execute(query)
+        result = cursor.fetchone()
+        if not result:
+            return None
+        value = result[0]
+        if not value:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 def apply_remote_sync_row(row: Dict[str, Any]) -> None:
     """Apply a row received from Google Sheets to the local database."""
 

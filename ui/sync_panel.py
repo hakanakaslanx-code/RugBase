@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from core import sheets_sync
+from core.auto_sync import AutoSyncController
 from dependency_loader import dependency_warning
 from settings import (
     DEFAULT_CREDENTIALS_PATH,
@@ -68,15 +69,26 @@ class SyncPanel(ttk.Frame):
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master, padding=12)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)
 
         self._settings = load_google_sync_settings()
         self._worker = _BackgroundWorker(self._on_worker_event)
         self._busy_task: Optional[str] = None
+        self._auto_sync: Optional[AutoSyncController] = None
+        self._last_auto_status: Optional[str] = None
+        self.status_var = tk.StringVar(value="")
+        self._conflict_items: list[dict[str, object]] = []
 
         self._build_ui()
         self._update_credentials_state()
         self._update_button_states()
+
+        self._auto_sync = AutoSyncController(
+            status_callback=self._handle_auto_sync_status,
+            log_callback=self._log_from_worker,
+            conflict_callback=self._handle_auto_conflicts,
+        )
+        self._auto_sync.start()
 
         if sheets_sync.is_api_available() and self._credentials_exist():
             self.after(750, self._initial_health_check)
@@ -100,6 +112,15 @@ class SyncPanel(ttk.Frame):
             highlightbackground=palette["border"],
             highlightcolor=palette["border"],
         )
+        if hasattr(self, "conflict_list"):
+            self.conflict_list.configure(
+                background=palette["frame"],
+                foreground=palette["foreground"],
+                selectbackground=palette["selection"],
+                selectforeground=palette["selection_text"],
+                highlightbackground=palette["border"],
+                highlightcolor=palette["border"],
+            )
 
     # ------------------------------------------------------------------
     # UI construction helpers
@@ -112,8 +133,18 @@ class SyncPanel(ttk.Frame):
         )
         self.credentials_path_var = tk.StringVar(value=self._settings.credential_path)
 
+        self.status_banner = ttk.Label(
+            self,
+            textvariable=self.status_var,
+            style="Warning.TLabel",
+            anchor="center",
+            padding=6,
+        )
+        self.status_banner.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.status_banner.grid_remove()
+
         form = ttk.LabelFrame(self, text="Google Sheets Ayarları", padding=12)
-        form.grid(row=0, column=0, sticky="nsew")
+        form.grid(row=1, column=0, sticky="nsew")
         form.columnconfigure(1, weight=1)
 
         ttk.Label(form, text="Sheet ID").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
@@ -180,12 +211,19 @@ class SyncPanel(ttk.Frame):
         self.logs_button.grid(row=0, column=3, sticky=tk.W)
 
         log_frame = ttk.LabelFrame(self, text="Durum Günlüğü", padding=12)
-        log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        log_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
         self.log_widget = scrolledtext.ScrolledText(log_frame, width=80, height=16, state="disabled")
         self.log_widget.grid(row=0, column=0, sticky="nsew")
+
+        conflict_frame = ttk.LabelFrame(self, text="Çakışmalar", padding=12)
+        conflict_frame.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        conflict_frame.columnconfigure(0, weight=1)
+
+        self.conflict_list = tk.Listbox(conflict_frame, height=4)
+        self.conflict_list.grid(row=0, column=0, sticky="ew")
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -393,11 +431,72 @@ class SyncPanel(ttk.Frame):
     def _log_from_worker(self, message: str) -> None:
         self.after(0, self._append_log, message)
 
+    def _handle_auto_sync_status(self, status: str, payload: dict[str, object]) -> None:
+        self.after(0, self._update_auto_status, status, payload)
+
+    def _update_auto_status(self, status: str, payload: dict[str, object]) -> None:
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        if status == "disabled" and reason == "dependencies":
+            self.status_var.set("Senkron devre dışı: bağımlılıklar eksik")
+            self.status_banner.grid()
+        else:
+            self.status_var.set("")
+            self.status_banner.grid_remove()
+
+        if status == "synced":
+            pull_stats = payload.get("pull") if isinstance(payload, dict) else None
+            push_stats = payload.get("push") if isinstance(payload, dict) else None
+            pull_applied = (
+                int(pull_stats.get("applied", 0)) if isinstance(pull_stats, dict) else 0
+            )
+            push_total = (
+                int(push_stats.get("total", 0)) if isinstance(push_stats, dict) else 0
+            )
+            if pull_applied or push_total:
+                self._append_log(
+                    f"Otomatik senkron tamamlandı: pull={pull_applied}, push={push_total}."
+                )
+        elif status == "offline" and status != self._last_auto_status:
+            message = payload.get("message") if isinstance(payload, dict) else None
+            detail = message or "Google Sheets'e ulaşılamadı"
+            self._append_log(f"Otomatik senkron çevrimdışı: {detail}")
+        elif status == "error" and status != self._last_auto_status:
+            message = payload.get("message") if isinstance(payload, dict) else None
+            detail = message or "beklenmeyen durum"
+            self._append_log(f"Otomatik senkron hatası: {detail}")
+
+        self._last_auto_status = status
+
+    def _handle_auto_conflicts(self, payload: dict[str, object]) -> None:
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            items = []
+        self.after(0, self._update_conflicts, items)
+
+    def _update_conflicts(self, items: list[dict[str, object]]) -> None:
+        self._conflict_items = items
+        if hasattr(self, "conflict_list"):
+            self.conflict_list.delete(0, tk.END)
+            for entry in items:
+                row_id = str(entry.get("row_id", ""))
+                fields = entry.get("fields") if isinstance(entry, dict) else {}
+                if isinstance(fields, dict):
+                    field_names = ", ".join(sorted(fields.keys()))
+                else:
+                    field_names = ""
+                timestamp = str(entry.get("timestamp", ""))
+                summary = f"{timestamp} · {row_id}"
+                if field_names:
+                    summary += f" ({field_names})"
+                self.conflict_list.insert(tk.END, summary)
+
     def _initial_health_check(self) -> None:
         self._append_log("Bağlantı ve yetkiler doğrulanıyor...")
         self._enqueue_task("health", self._task_health)
 
     def destroy(self) -> None:  # pragma: no cover - Tkinter lifecycle
+        if self._auto_sync:
+            self._auto_sync.stop()
         self._worker.shutdown()
         super().destroy()
 
