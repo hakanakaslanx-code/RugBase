@@ -155,6 +155,8 @@ class DymoLabelRenderer:
         self.settings: DymoLabelSettings = load_settings()
         self._font_cache: Dict[Tuple[str, int], Any] = {}
         self._pdf_dimensions: Optional[Tuple[float, float]] = None
+        self._force_default_font = False
+        self._default_font_warning: Optional[str] = None
 
     @property
     def pillow_available(self) -> bool:
@@ -171,6 +173,27 @@ class DymoLabelRenderer:
         px = value_pt / POINTS_PER_INCH * self.settings.dpi
         return max(1, int(round(px)))
 
+    def use_default_font_fallback(self, warning: Optional[str] = None) -> None:
+        """Force the renderer to use Pillow's built-in bitmap font."""
+
+        if not PIL_AVAILABLE:
+            return
+        self._force_default_font = True
+        self._default_font_warning = (
+            warning
+            or "Packaged label fonts were not found. Using Pillow's default font for rendering."
+        )
+        self._font_cache.clear()
+
+    def _use_default_font(self, spec: FontSpec, warning: Optional[str]) -> Tuple[Any, Optional[str]]:
+        key = (spec.name, spec.size_pt)
+        cached = self._font_cache.get(key)
+        if cached:
+            return cached, None
+        font = ImageFont.load_default()
+        self._font_cache[key] = font
+        return font, warning
+
     def _load_font(self, spec: FontSpec) -> Tuple[Any, Optional[str]]:
         if not PIL_AVAILABLE:
             raise RuntimeError(PIL_IMPORT_MESSAGE)
@@ -178,15 +201,17 @@ class DymoLabelRenderer:
         cached = self._font_cache.get(key)
         if cached:
             return cached, None
+        if self._force_default_font:
+            warning = self._default_font_warning
+            return self._use_default_font(spec, warning)
         try:
             font = ImageFont.truetype(spec.name, self._pt_to_px(spec.size_pt))
         except OSError:
-            font = ImageFont.load_default()
             warning = (
                 f"TrueType font '{spec.name}' could not be found. Using the default Pillow font."
             )
-            self._font_cache[key] = font
-            return font, warning
+            self.use_default_font_fallback(warning)
+            return self._use_default_font(spec, warning)
         else:
             self._font_cache[key] = font
             return font, None

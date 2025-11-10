@@ -38,6 +38,11 @@ HIDDEN_IMPORTS: Iterable[str] = (
     "google_auth_oauthlib.flow",
     "httplib2",
     "oauthlib.oauth2",
+    "PIL",
+    "PIL.Image",
+    "PIL.ImageFont",
+    "PIL.ImageDraw",
+    "PIL._imaging",
 )
 
 _MISSING_DEPENDENCY_MESSAGE = (
@@ -45,9 +50,14 @@ _MISSING_DEPENDENCY_MESSAGE = (
     "'pip install -r requirements.txt' in the development environment and rebuild with PyInstaller."
 )
 
+_MISSING_PILLOW_MESSAGE = (
+    "Label rendering dependencies are missing. Ensure Pillow is installed or rebuild the package."
+)
+
 _runtime_root: Optional[Path] = None
 _vendor_path: Optional[Path] = None
 _google_available = False
+_pillow_available = False
 _missing_message = _MISSING_DEPENDENCY_MESSAGE
 _initialised = False
 
@@ -79,10 +89,10 @@ def _ensure_vendor_on_path(root: Path) -> Optional[Path]:
 def bootstrap() -> bool:
     """Initialise dependency loading for the current process."""
 
-    global _runtime_root, _vendor_path, _google_available, _initialised
+    global _runtime_root, _vendor_path, _google_available, _pillow_available, _initialised
 
     if _initialised:
-        return _google_available
+        return _google_available and _pillow_available
 
     _runtime_root = _detect_runtime_root()
     os.environ.setdefault("RUGBASE_RUNTIME_ROOT", str(_runtime_root))
@@ -91,6 +101,7 @@ def bootstrap() -> bool:
         os.environ["RUGBASE_VENDOR_PATH"] = str(_vendor_path)
 
     _google_available = deps_bootstrap.ensure_google_deps()
+    _pillow_available = deps_bootstrap.ensure_pillow_deps()
     if not _google_available:
         os.environ.setdefault("RUGBASE_DEPENDENCY_WARNING", _MISSING_DEPENDENCY_MESSAGE)
         logger.warning("[Deps] %s", _MISSING_DEPENDENCY_MESSAGE)
@@ -98,8 +109,15 @@ def bootstrap() -> bool:
         os.environ.pop("RUGBASE_DEPENDENCY_WARNING", None)
         logger.info("[Deps] Google dependencies loaded successfully.")
 
+    if not _pillow_available:
+        os.environ.setdefault("RUGBASE_PILLOW_WARNING", _MISSING_PILLOW_MESSAGE)
+        logger.warning("[Deps] %s", _MISSING_PILLOW_MESSAGE)
+    else:
+        os.environ.pop("RUGBASE_PILLOW_WARNING", None)
+        logger.info("[Deps] Pillow dependencies loaded successfully.")
+
     _initialised = True
-    return _google_available
+    return _google_available and _pillow_available
 
 
 def google_dependencies_available() -> bool:
@@ -122,6 +140,20 @@ def dependency_warning() -> str:
     """Return the human-readable warning for missing Google dependencies."""
 
     return os.environ.get("RUGBASE_DEPENDENCY_WARNING", _missing_message)
+
+
+def pillow_available() -> bool:
+    """Return ``True`` if Pillow is importable."""
+
+    if not _initialised:
+        bootstrap()
+    return _pillow_available
+
+
+def pillow_warning() -> str:
+    """Return the human-readable warning for missing Pillow dependencies."""
+
+    return os.environ.get("RUGBASE_PILLOW_WARNING", _MISSING_PILLOW_MESSAGE)
 
 
 def runtime_root() -> Path:
@@ -154,6 +186,8 @@ __all__ = [
     "bootstrap",
     "google_dependencies_available",
     "dependency_warning",
+    "pillow_available",
+    "pillow_warning",
     "missing_google_dependencies",
     "runtime_root",
     "vendor_path",

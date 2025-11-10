@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional
 
+import logging
+
 try:
     from PIL import ImageTk  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - optional dependency at runtime
@@ -13,6 +15,8 @@ import db
 from label_renderer import DymoLabelRenderer, PIL_AVAILABLE, PIL_IMPORT_MESSAGE, ensure_pillow
 
 MISSING_PILLOW_TEXT = "Label features are unavailable without the Pillow library."
+
+logger = logging.getLogger(__name__)
 
 
 class LabelGeneratorWindow:
@@ -250,11 +254,11 @@ class LabelGeneratorWindow:
         self.warning_var.set("")
 
     def _handle_missing_pillow(self) -> None:
+        logger.warning("Pillow is unavailable; label generator will use fallback fonts where possible.")
+        self.renderer.use_default_font_fallback(
+            "Pillow was not available. Labels will render with the default Pillow font when dependencies are restored."
+        )
         self.warning_var.set(PIL_IMPORT_MESSAGE)
-        try:
-            messagebox.showerror("Label Generator", PIL_IMPORT_MESSAGE, parent=self.window)
-        except tk.TclError:
-            messagebox.showerror("Label Generator", PIL_IMPORT_MESSAGE)
         self.save_button.configure(state=tk.DISABLED)
         self.bulk_button.configure(state=tk.DISABLED)
         self.print_button.configure(state=tk.DISABLED)
