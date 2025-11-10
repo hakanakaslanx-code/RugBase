@@ -809,225 +809,6 @@ class MainWindow:
         if self.customer_notes_text:
             self.customer_notes_text.delete("1.0", tk.END)
 
-
-class CustomerDialog:
-    def __init__(
-        self,
-        parent: tk.Misc,
-        customer: Optional[Dict[str, Any]] = None,
-        *,
-        on_save: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> None:
-        self.parent = parent
-        self.customer = customer or {}
-        self.on_save = on_save
-        self.window = tk.Toplevel(parent)
-        self.window.title("Edit Customer" if customer else "New Customer")
-        self.window.transient(parent)
-        self.window.grab_set()
-        self.window.resizable(False, False)
-
-        self.form_vars: Dict[str, tk.StringVar] = {}
-
-        frame = ttk.Frame(self.window, padding=12)
-        frame.grid(row=0, column=0, sticky="nsew")
-        frame.columnconfigure(1, weight=1)
-
-        fields = [
-            ("Full Name", "full_name"),
-            ("Phone", "phone"),
-            ("Email", "email"),
-            ("Address", "address"),
-            ("City", "city"),
-            ("State", "state"),
-            ("Zip", "zip"),
-        ]
-
-        for index, (label, key) in enumerate(fields):
-            ttk.Label(frame, text=f"{label}:").grid(row=index, column=0, sticky=tk.W, pady=4, padx=(0, 8))
-            variable = tk.StringVar(value=str(self.customer.get(key) or ""))
-            self.form_vars[key] = variable
-            entry = ttk.Entry(frame, textvariable=variable, width=32)
-            entry.grid(row=index, column=1, sticky="ew", pady=4)
-
-        ttk.Label(frame, text="Notes:").grid(
-            row=len(fields), column=0, sticky=tk.NW, pady=4, padx=(0, 8)
-        )
-        self.notes_text = tk.Text(frame, height=4, width=40)
-        self.notes_text.grid(row=len(fields), column=1, sticky="ew", pady=4)
-        self.notes_text.insert("1.0", str(self.customer.get("notes") or ""))
-
-        button_row = ttk.Frame(frame)
-        button_row.grid(row=len(fields) + 1, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(button_row, text="Cancel", command=self.window.destroy).pack(side=tk.RIGHT)
-        ttk.Button(
-            button_row,
-            text="Save",
-            style="Accent.TButton",
-            command=self._save,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
-
-    def _save(self) -> None:
-        data = {key: var.get().strip() for key, var in self.form_vars.items()}
-        data["notes"] = self.notes_text.get("1.0", tk.END).strip()
-        try:
-            if self.customer.get("id"):
-                customer_id = int(self.customer["id"])
-                db.update_customer(customer_id, data)
-            else:
-                customer_id = db.create_customer(data)
-        except ValueError as exc:
-            messagebox.showerror("Customer", str(exc))
-            return
-        except Exception as exc:
-            messagebox.showerror("Customer", f"Failed to save customer: {exc}")
-            return
-
-        record = db.fetch_customer(customer_id)
-        if record and self.on_save:
-            self.on_save(record)
-
-        messagebox.showinfo("Customer", "Customer saved successfully.")
-        self.window.destroy()
-
-
-class MarkSoldDialog:
-    def __init__(
-        self,
-        parent: tk.Misc,
-        item: Dict[str, Any],
-        *,
-        on_complete: Optional[Callable[[], None]] = None,
-        on_customer_created: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> None:
-        self.parent = parent
-        self.item = item
-        self.on_complete = on_complete
-        self.on_customer_created = on_customer_created
-        self.window = tk.Toplevel(parent)
-        self.window.title("Mark as Sold")
-        self.window.transient(parent)
-        self.window.grab_set()
-        self.window.resizable(False, False)
-
-        container = ttk.Frame(self.window, padding=12)
-        container.grid(row=0, column=0, sticky="nsew")
-        container.columnconfigure(1, weight=1)
-
-        summary = item.get("rug_no") or item.get("item_id")
-        ttk.Label(
-            container,
-            text=f"Item: {summary}",
-            style="SubHeader.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 12))
-
-        ttk.Label(container, text="Customer:").grid(row=1, column=0, sticky=tk.W, pady=4, padx=(0, 8))
-        self.customer_combo = ttk.Combobox(container, state="readonly")
-        self.customer_combo.grid(row=1, column=1, sticky="ew", pady=4)
-
-        self.customer_options: List[Dict[str, Any]] = []
-
-        ttk.Button(
-            container,
-            text="New Customer",
-            command=self._open_new_customer,
-        ).grid(row=2, column=1, sticky=tk.E, pady=(0, 8))
-
-        ttk.Label(container, text="Sale Price:").grid(row=3, column=0, sticky=tk.W, pady=4, padx=(0, 8))
-        default_price = item.get("sale_price") or item.get("sp") or ""
-        self.price_var = tk.StringVar(value=str(default_price) if default_price else "")
-        price_entry = ttk.Entry(container, textvariable=self.price_var)
-        price_entry.grid(row=3, column=1, sticky="ew", pady=4)
-
-        ttk.Label(container, text="Notes:").grid(row=4, column=0, sticky=tk.NW, pady=4, padx=(0, 8))
-        self.note_text = tk.Text(container, height=4, width=40)
-        self.note_text.grid(row=4, column=1, sticky="ew", pady=4)
-        if item.get("sale_note"):
-            self.note_text.insert("1.0", str(item.get("sale_note")))
-
-        button_row = ttk.Frame(container)
-        button_row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(button_row, text="Cancel", command=self.window.destroy).pack(side=tk.RIGHT)
-        ttk.Button(
-            button_row,
-            text="Mark Sold",
-            style="Accent.TButton",
-            command=self._mark_sold,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
-
-        self._load_customers(select_id=item.get("customer_id"))
-
-    def _load_customers(self, select_id: Optional[Any] = None) -> None:
-        try:
-            customers = db.fetch_customers()
-        except Exception as exc:
-            messagebox.showerror("Mark as Sold", f"Failed to load customers: {exc}")
-            customers = []
-        self.customer_options = customers
-        display_values = []
-        selection_index = -1
-        for index, record in enumerate(customers):
-            name = record.get("full_name") or "Unnamed"
-            phone = record.get("phone") or record.get("email") or ""
-            label = name if not phone else f"{name} — {phone}"
-            display_values.append(label)
-            if select_id is not None and record.get("id") == select_id:
-                selection_index = index
-        self.customer_combo["values"] = display_values
-        if selection_index >= 0:
-            self.customer_combo.current(selection_index)
-        elif display_values:
-            self.customer_combo.current(0)
-
-    def _open_new_customer(self) -> None:
-        CustomerDialog(
-            self.window,
-            customer=None,
-            on_save=self._handle_new_customer,
-        )
-
-    def _handle_new_customer(self, record: Dict[str, Any]) -> None:
-        if self.on_customer_created:
-            self.on_customer_created(record)
-        self._load_customers(select_id=record.get("id"))
-
-    def _selected_customer_id(self) -> Optional[int]:
-        index = self.customer_combo.current()
-        if index < 0 or index >= len(self.customer_options):
-            return None
-        try:
-            return int(self.customer_options[index]["id"])
-        except (TypeError, ValueError, KeyError):
-            return None
-
-    def _mark_sold(self) -> None:
-        customer_id = self._selected_customer_id()
-        if customer_id is None:
-            messagebox.showerror("Mark as Sold", "Please select a customer.")
-            return
-
-        price_value = self.price_var.get().strip()
-        note_value = self.note_text.get("1.0", tk.END).strip()
-
-        try:
-            db.mark_item_sold(
-                self.item["item_id"],
-                customer_id=customer_id,
-                sale_price=price_value if price_value else None,
-                note=note_value,
-            )
-        except ValueError as exc:
-            messagebox.showerror("Mark as Sold", str(exc))
-            return
-        except Exception as exc:
-            messagebox.showerror("Mark as Sold", f"Unable to mark item as sold: {exc}")
-            return
-
-        messagebox.showinfo("Mark as Sold", "Item marked as sold successfully.")
-        if self.on_complete:
-            self.on_complete()
-        self.window.destroy()
-
     def on_delete_item(self) -> None:
         item_id = self.get_selected_item_id()
         if not item_id:
@@ -1318,3 +1099,223 @@ class MarkSoldDialog:
             except Exception:  # pragma: no cover - defensive cleanup
                 pass
         self.root.destroy()
+
+
+class CustomerDialog:
+    def __init__(
+        self,
+        parent: tk.Misc,
+        customer: Optional[Dict[str, Any]] = None,
+        *,
+        on_save: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> None:
+        self.parent = parent
+        self.customer = customer or {}
+        self.on_save = on_save
+        self.window = tk.Toplevel(parent)
+        self.window.title("Edit Customer" if customer else "New Customer")
+        self.window.transient(parent)
+        self.window.grab_set()
+        self.window.resizable(False, False)
+
+        self.form_vars: Dict[str, tk.StringVar] = {}
+
+        frame = ttk.Frame(self.window, padding=12)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(1, weight=1)
+
+        fields = [
+            ("Full Name", "full_name"),
+            ("Phone", "phone"),
+            ("Email", "email"),
+            ("Address", "address"),
+            ("City", "city"),
+            ("State", "state"),
+            ("Zip", "zip"),
+        ]
+
+        for index, (label, key) in enumerate(fields):
+            ttk.Label(frame, text=f"{label}:").grid(row=index, column=0, sticky=tk.W, pady=4, padx=(0, 8))
+            variable = tk.StringVar(value=str(self.customer.get(key) or ""))
+            self.form_vars[key] = variable
+            entry = ttk.Entry(frame, textvariable=variable, width=32)
+            entry.grid(row=index, column=1, sticky="ew", pady=4)
+
+        ttk.Label(frame, text="Notes:").grid(
+            row=len(fields), column=0, sticky=tk.NW, pady=4, padx=(0, 8)
+        )
+        self.notes_text = tk.Text(frame, height=4, width=40)
+        self.notes_text.grid(row=len(fields), column=1, sticky="ew", pady=4)
+        self.notes_text.insert("1.0", str(self.customer.get("notes") or ""))
+
+        button_row = ttk.Frame(frame)
+        button_row.grid(row=len(fields) + 1, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(button_row, text="Cancel", command=self.window.destroy).pack(side=tk.RIGHT)
+        ttk.Button(
+            button_row,
+            text="Save",
+            style="Accent.TButton",
+            command=self._save,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _save(self) -> None:
+        data = {key: var.get().strip() for key, var in self.form_vars.items()}
+        data["notes"] = self.notes_text.get("1.0", tk.END).strip()
+        try:
+            if self.customer.get("id"):
+                customer_id = int(self.customer["id"])
+                db.update_customer(customer_id, data)
+            else:
+                customer_id = db.create_customer(data)
+        except ValueError as exc:
+            messagebox.showerror("Customer", str(exc))
+            return
+        except Exception as exc:
+            messagebox.showerror("Customer", f"Failed to save customer: {exc}")
+            return
+
+        record = db.fetch_customer(customer_id)
+        if record and self.on_save:
+            self.on_save(record)
+
+        messagebox.showinfo("Customer", "Customer saved successfully.")
+        self.window.destroy()
+
+
+class MarkSoldDialog:
+    def __init__(
+        self,
+        parent: tk.Misc,
+        item: Dict[str, Any],
+        *,
+        on_complete: Optional[Callable[[], None]] = None,
+        on_customer_created: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> None:
+        self.parent = parent
+        self.item = item
+        self.on_complete = on_complete
+        self.on_customer_created = on_customer_created
+        self.window = tk.Toplevel(parent)
+        self.window.title("Mark as Sold")
+        self.window.transient(parent)
+        self.window.grab_set()
+        self.window.resizable(False, False)
+
+        container = ttk.Frame(self.window, padding=12)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(1, weight=1)
+
+        summary = item.get("rug_no") or item.get("item_id")
+        ttk.Label(
+            container,
+            text=f"Item: {summary}",
+            style="SubHeader.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 12))
+
+        ttk.Label(container, text="Customer:").grid(row=1, column=0, sticky=tk.W, pady=4, padx=(0, 8))
+        self.customer_combo = ttk.Combobox(container, state="readonly")
+        self.customer_combo.grid(row=1, column=1, sticky="ew", pady=4)
+
+        self.customer_options: List[Dict[str, Any]] = []
+
+        ttk.Button(
+            container,
+            text="New Customer",
+            command=self._open_new_customer,
+        ).grid(row=2, column=1, sticky=tk.E, pady=(0, 8))
+
+        ttk.Label(container, text="Sale Price:").grid(row=3, column=0, sticky=tk.W, pady=4, padx=(0, 8))
+        default_price = item.get("sale_price") or item.get("sp") or ""
+        self.price_var = tk.StringVar(value=str(default_price) if default_price else "")
+        price_entry = ttk.Entry(container, textvariable=self.price_var)
+        price_entry.grid(row=3, column=1, sticky="ew", pady=4)
+
+        ttk.Label(container, text="Notes:").grid(row=4, column=0, sticky=tk.NW, pady=4, padx=(0, 8))
+        self.note_text = tk.Text(container, height=4, width=40)
+        self.note_text.grid(row=4, column=1, sticky="ew", pady=4)
+        if item.get("sale_note"):
+            self.note_text.insert("1.0", str(item.get("sale_note")))
+
+        button_row = ttk.Frame(container)
+        button_row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(button_row, text="Cancel", command=self.window.destroy).pack(side=tk.RIGHT)
+        ttk.Button(
+            button_row,
+            text="Mark Sold",
+            style="Accent.TButton",
+            command=self._mark_sold,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._load_customers(select_id=item.get("customer_id"))
+
+    def _load_customers(self, select_id: Optional[Any] = None) -> None:
+        try:
+            customers = db.fetch_customers()
+        except Exception as exc:
+            messagebox.showerror("Mark as Sold", f"Failed to load customers: {exc}")
+            customers = []
+        self.customer_options = customers
+        display_values = []
+        selection_index = -1
+        for index, record in enumerate(customers):
+            name = record.get("full_name") or "Unnamed"
+            phone = record.get("phone") or record.get("email") or ""
+            label = name if not phone else f"{name} — {phone}"
+            display_values.append(label)
+            if select_id is not None and record.get("id") == select_id:
+                selection_index = index
+        self.customer_combo["values"] = display_values
+        if selection_index >= 0:
+            self.customer_combo.current(selection_index)
+        elif display_values:
+            self.customer_combo.current(0)
+
+    def _open_new_customer(self) -> None:
+        CustomerDialog(
+            self.window,
+            customer=None,
+            on_save=self._handle_new_customer,
+        )
+
+    def _handle_new_customer(self, record: Dict[str, Any]) -> None:
+        if self.on_customer_created:
+            self.on_customer_created(record)
+        self._load_customers(select_id=record.get("id"))
+
+    def _selected_customer_id(self) -> Optional[int]:
+        index = self.customer_combo.current()
+        if index < 0 or index >= len(self.customer_options):
+            return None
+        try:
+            return int(self.customer_options[index]["id"])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _mark_sold(self) -> None:
+        customer_id = self._selected_customer_id()
+        if customer_id is None:
+            messagebox.showerror("Mark as Sold", "Please select a customer.")
+            return
+
+        price_value = self.price_var.get().strip()
+        note_value = self.note_text.get("1.0", tk.END).strip()
+
+        try:
+            db.mark_item_sold(
+                self.item["item_id"],
+                customer_id=customer_id,
+                sale_price=price_value if price_value else None,
+                note=note_value,
+            )
+        except ValueError as exc:
+            messagebox.showerror("Mark as Sold", str(exc))
+            return
+        except Exception as exc:
+            messagebox.showerror("Mark as Sold", f"Unable to mark item as sold: {exc}")
+            return
+
+        messagebox.showinfo("Mark as Sold", "Item marked as sold successfully.")
+        if self.on_complete:
+            self.on_complete()
+        self.window.destroy()
+
