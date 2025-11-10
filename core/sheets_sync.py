@@ -105,6 +105,10 @@ HEADERS: List[str] = [
     "Barcode",
     "Tags",
     "Notes",
+    "SoldAt",
+    "CustomerId",
+    "SalePrice",
+    "SaleNote",
     "UpdatedAt",
     "Hash",
     "Deleted",
@@ -167,8 +171,41 @@ LOCAL_TO_SHEET_FIELD_MAP: Mapping[str, Optional[str]] = {
     "Barcode": "upc",
     "Tags": "brand_name",
     "Notes": None,
+    "SoldAt": "sold_at",
+    "CustomerId": "customer_id",
+    "SalePrice": "sale_price",
+    "SaleNote": "sale_note",
     "UpdatedAt": "updated_at",
     "Deleted": None,
+}
+
+CUSTOMER_SHEET_TITLE = "Customers"
+CUSTOMER_HEADERS: Tuple[str, ...] = (
+    "Id",
+    "FullName",
+    "Phone",
+    "Email",
+    "Address",
+    "City",
+    "State",
+    "Zip",
+    "Notes",
+    "CreatedAt",
+    "UpdatedAt",
+)
+
+CUSTOMER_FIELD_MAP: Mapping[str, str] = {
+    "Id": "id",
+    "FullName": "full_name",
+    "Phone": "phone",
+    "Email": "email",
+    "Address": "address",
+    "City": "city",
+    "State": "state",
+    "Zip": "zip",
+    "Notes": "notes",
+    "CreatedAt": "created_at",
+    "UpdatedAt": "updated_at",
 }
 
 
@@ -409,7 +446,8 @@ def _fetch_local_rows(conn: sqlite3.Connection) -> List[SheetRow]:
         "SELECT item_id, rug_no, upc, roll_no, v_rug_no, v_collection, collection, "
         "v_design, design, brand_name, ground, border, a_size, st_size, area, type, "
         "rate, amount, shape, style, image_file_name, origin, retail, sp, msrp, cost, "
-        "qty, created_at, updated_at, version, status, location, consignment_id "
+        "qty, created_at, updated_at, version, status, location, consignment_id, "
+        "sold_at, customer_id, sale_price, sale_note "
         "FROM item"
     )
     return [_sqlite_row_to_sheet(row) for row in cursor.fetchall()]
@@ -465,6 +503,15 @@ def _values_batch_update(service, spreadsheet_id: str, data: List[Dict[str, Any]
     return _call_with_retry(request.execute, "values.batchUpdate")
 
 
+def _values_clear(service, spreadsheet_id: str, range_spec: str) -> None:
+    request = service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id,
+        range=range_spec,
+        body={},
+    )
+    _call_with_retry(request.execute, "values.clear")
+
+
 def _spreadsheet_get(service, spreadsheet_id: str) -> Dict[str, Any]:
     request = service.spreadsheets().get(spreadsheetId=spreadsheet_id, includeGridData=False)
     result, _ = _call_with_retry(request.execute, "spreadsheets.get")
@@ -505,6 +552,7 @@ def _ensure_sheet_structure(
     worksheet_id: Optional[int] = None
     meta_id: Optional[int] = None
     log_id: Optional[int] = None
+    customer_sheet_id: Optional[int] = None
 
     for sheet in sheets:
         properties = sheet.get("properties", {})
@@ -514,6 +562,8 @@ def _ensure_sheet_structure(
             meta_id = properties.get("sheetId")
         if properties.get("title") == LOG_SHEET_TITLE:
             log_id = properties.get("sheetId")
+        if properties.get("title") == CUSTOMER_SHEET_TITLE:
+            customer_sheet_id = properties.get("sheetId")
 
     requests: List[Dict[str, Any]] = []
 
@@ -551,6 +601,20 @@ def _ensure_sheet_structure(
                 }
             }
         )
+    if customer_sheet_id is None:
+        requests.append(
+            {
+                "addSheet": {
+                    "properties": {
+                        "title": CUSTOMER_SHEET_TITLE,
+                        "gridProperties": {
+                            "rowCount": 2,
+                            "columnCount": len(CUSTOMER_HEADERS),
+                        },
+                    }
+                }
+            }
+        )
 
     if requests:
         request = service.spreadsheets().batchUpdate(
@@ -568,6 +632,8 @@ def _ensure_sheet_structure(
                 meta_id = properties.get("sheetId")
             if properties.get("title") == LOG_SHEET_TITLE:
                 log_id = properties.get("sheetId")
+            if properties.get("title") == CUSTOMER_SHEET_TITLE:
+                customer_sheet_id = properties.get("sheetId")
 
     if worksheet_id is None:
         raise SpreadsheetAccessError("Worksheet bulunamadı veya oluşturulamadı.")
@@ -584,6 +650,27 @@ def _ensure_sheet_structure(
                 {
                     "range": header_range,
                     "values": [HEADERS],
+                }
+            ],
+        )
+
+    customer_header_range = (
+        f"{CUSTOMER_SHEET_TITLE}!A1:{_column_a1(len(CUSTOMER_HEADERS) - 1)}1"
+    )
+    current_customer_headers = _values_batch_get(
+        service,
+        spreadsheet_id,
+        [customer_header_range],
+    )
+    customer_values = current_customer_headers.get("valueRanges", [{}])[0].get("values", [])
+    if not customer_values or customer_values[0] != list(CUSTOMER_HEADERS):
+        _values_batch_update(
+            service,
+            spreadsheet_id,
+            [
+                {
+                    "range": customer_header_range,
+                    "values": [list(CUSTOMER_HEADERS)],
                 }
             ],
         )
@@ -697,6 +784,46 @@ def _ensure_sheet_structure(
         )
 
     return worksheet_id
+
+
+def _sync_customers_sheet(
+    service,
+    spreadsheet_id: str,
+    customers: Sequence[Mapping[str, Any]],
+    *,
+    log_callback: Optional[Callable[[str], None]] = None,
+) -> int:
+    clear_range = f"{CUSTOMER_SHEET_TITLE}!A2:{_column_a1(len(CUSTOMER_HEADERS) - 1)}"
+    _values_clear(service, spreadsheet_id, clear_range)
+
+    if not customers:
+        if log_callback:
+            log_callback("Customers sheet cleared (0 kayıt).")
+        return 0
+
+    rows: List[List[str]] = []
+    for record in customers:
+        row: List[str] = []
+        for header in CUSTOMER_HEADERS:
+            key = CUSTOMER_FIELD_MAP[header]
+            value = record.get(key)
+            row.append("" if value is None else str(value))
+        rows.append(row)
+
+    start_range = f"{CUSTOMER_SHEET_TITLE}!A2"
+    _values_batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "range": start_range,
+                "values": rows,
+            }
+        ],
+    )
+    if log_callback:
+        log_callback(f"Customers sheet senkronize edildi ({len(rows)} kayıt).")
+    return len(rows)
 
 
 def _append_sync_log(
@@ -900,6 +1027,10 @@ def _sheet_row_to_db_payload(row: Mapping[str, Any]) -> Dict[str, Any]:
         "image_file_name": row.get("ImageURLs"),
         "brand_name": row.get("Tags"),
         "updated_at": row.get("UpdatedAt"),
+        "sold_at": row.get("SoldAt"),
+        "customer_id": row.get("CustomerId"),
+        "sale_price": row.get("SalePrice"),
+        "sale_note": row.get("SaleNote"),
     }
     if str(row.get("Deleted", "")).upper() == "TRUE":
         payload["status"] = "archived"
@@ -978,6 +1109,21 @@ def push(
 
     service = get_client(credential_path)
     worksheet_id = _ensure_sheet_structure(service, parsed_id, worksheet_title)
+
+    try:
+        customer_rows = db.fetch_customers_for_sheet()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        raise SpreadsheetAccessError(f"Müşteri verileri okunamadı: {exc}") from exc
+
+    try:
+        customer_synced = _sync_customers_sheet(
+            service,
+            parsed_id,
+            customer_rows,
+            log_callback=log_callback,
+        )
+    except Exception as exc:  # pragma: no cover - network/IO guard
+        raise SpreadsheetAccessError(f"Customers sheet güncellenemedi: {exc}") from exc
 
     processed_outbox = 0
     try:
@@ -1110,6 +1256,7 @@ def push(
         "new": new_count,
         "changed": changed_count,
         "total": total_written,
+        "customers": customer_synced,
     }
 
 
@@ -1154,7 +1301,8 @@ def pull(
                     "SELECT item_id, rug_no, upc, roll_no, v_rug_no, v_collection, collection, "
                     "v_design, design, brand_name, ground, border, a_size, st_size, area, type, "
                     "rate, amount, shape, style, image_file_name, origin, retail, sp, msrp, cost, "
-                    "qty, created_at, updated_at, version, status, location, consignment_id "
+                    "qty, created_at, updated_at, version, status, location, consignment_id, "
+                    "sold_at, customer_id, sale_price, sale_note "
                     "FROM item WHERE item_id = ?",
                     (row.row_id,),
                 )
