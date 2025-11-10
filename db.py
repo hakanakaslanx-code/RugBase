@@ -7,8 +7,8 @@ import sqlite3
 import sys
 import threading
 import uuid
-from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from core import app_paths
 
@@ -205,9 +205,58 @@ TABLE_COLUMNS: List[Tuple[str, str]] = [
     ("status", "TEXT DEFAULT 'in_stock'"),
     ("location", "TEXT DEFAULT 'warehouse'"),
     ("consignment_id", "INTEGER"),
+    ("sold_at", "TEXT"),
+    ("customer_id", "INTEGER"),
+    ("sale_price", "REAL"),
+    ("sale_note", "TEXT"),
 ]
 
-UPDATABLE_FIELDS: Tuple[str, ...] = MASTER_SHEET_FIELDS
+UPDATABLE_FIELDS: Tuple[str, ...] = (
+    *MASTER_SHEET_FIELDS,
+    "qty",
+    "status",
+    "location",
+    "consignment_id",
+    "sold_at",
+    "customer_id",
+    "sale_price",
+    "sale_note",
+)
+
+
+CUSTOMER_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name TEXT NOT NULL,
+    phone TEXT,
+    email TEXT,
+    address TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+CUSTOMER_FIELDS: Tuple[str, ...] = (
+    "full_name",
+    "phone",
+    "email",
+    "address",
+    "city",
+    "state",
+    "zip",
+    "notes",
+)
+
+CUSTOMER_SELECT_FIELDS: Tuple[str, ...] = (
+    "id",
+    *CUSTOMER_FIELDS,
+    "created_at",
+    "updated_at",
+)
 
 
 def _build_create_table_sql(columns: Iterable[Tuple[str, str]]) -> str:
@@ -317,6 +366,7 @@ def initialize_database() -> None:
         os.makedirs(db_directory, exist_ok=True)
     with get_connection() as conn:
         conn.execute(CREATE_ITEM_TABLE_SQL)
+        conn.execute(CUSTOMER_TABLE_SQL)
         conn.execute(PROCESSED_CHANGES_TABLE_SQL)
         conn.execute(CONFLICTS_TABLE_SQL)
         conn.execute(PROCESSED_STOCK_TXN_TABLE_SQL)
@@ -365,6 +415,7 @@ def fetch_items(
     collection_filter: Optional[str] = None,
     brand_filter: Optional[str] = None,
     style_filter: Optional[str] = None,
+    status_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     select_fields = [
         "item_id",
@@ -376,6 +427,13 @@ def fetch_items(
         "updated_by",
         "version",
         "last_pushed_version",
+        "status",
+        "location",
+        "consignment_id",
+        "sold_at",
+        "customer_id",
+        "sale_price",
+        "sale_note",
     ]
     query = f"SELECT {', '.join(select_fields)} FROM item"
     filters = ["COALESCE(status, 'in_stock') != 'deleted'"]
@@ -393,6 +451,9 @@ def fetch_items(
     if style_filter:
         filters.append("LOWER(style) LIKE ?")
         params.append(f"%{style_filter.lower()}%")
+    if status_filter:
+        filters.append("LOWER(COALESCE(status, '')) = ?")
+        params.append(status_filter.lower())
 
     if filters:
         query += " WHERE " + " AND ".join(filters)
@@ -479,6 +540,13 @@ def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
         "updated_by",
         "version",
         "last_pushed_version",
+        "status",
+        "location",
+        "consignment_id",
+        "sold_at",
+        "customer_id",
+        "sale_price",
+        "sale_note",
     ]
     query = f"SELECT {', '.join(select_fields)} FROM item WHERE item_id = ?"
 
@@ -807,6 +875,171 @@ def generate_item_id() -> str:
     """Generate a short unique identifier for a new item."""
 
     return f"ITEM-{uuid.uuid4().hex[:8].upper()}"
+
+
+def _normalise_customer_payload(data: Mapping[str, Any]) -> Dict[str, Optional[str]]:
+    payload: Dict[str, Optional[str]] = {}
+    for field in CUSTOMER_FIELDS:
+        value = data.get(field)
+        if value is None:
+            payload[field] = None
+            continue
+        text = str(value).strip()
+        payload[field] = text or None
+    full_name = (payload.get("full_name") or "").strip()
+    if not full_name:
+        raise ValueError("full_name is required")
+    payload["full_name"] = full_name
+    return payload
+
+
+def create_customer(customer_data: Mapping[str, Any]) -> int:
+    payload = _normalise_customer_payload(customer_data)
+    now = _now_iso()
+    values = [payload.get(field) for field in CUSTOMER_FIELDS]
+    with get_connection() as conn:
+        cursor = conn.execute(
+            f"""
+            INSERT INTO customers ({', '.join(CUSTOMER_FIELDS)}, created_at, updated_at)
+            VALUES ({', '.join('?' for _ in CUSTOMER_FIELDS)}, ?, ?)
+            """,
+            (*values, now, now),
+        )
+        conn.commit()
+        customer_id = cursor.lastrowid
+    if customer_id is None:
+        raise RuntimeError("Failed to insert customer")
+    return int(customer_id)
+
+
+def update_customer(customer_id: int, customer_data: Mapping[str, Any]) -> None:
+    payload = _normalise_customer_payload(customer_data)
+    now = _now_iso()
+    assignments = ", ".join(f"{field} = ?" for field in CUSTOMER_FIELDS)
+    params = [payload.get(field) for field in CUSTOMER_FIELDS]
+    params.extend([now, int(customer_id)])
+    with get_connection() as conn:
+        cursor = conn.execute(
+            f"UPDATE customers SET {assignments}, updated_at = ? WHERE id = ?",
+            params,
+        )
+        if cursor.rowcount == 0:
+            raise ValueError(f"Customer {customer_id} not found")
+        conn.commit()
+
+
+def upsert_customer(customer_data: Mapping[str, Any]) -> int:
+    customer_id = customer_data.get("id")
+    if customer_id:
+        update_customer(int(customer_id), customer_data)
+        return int(customer_id)
+    return create_customer(customer_data)
+
+
+def fetch_customer(customer_id: int) -> Optional[Dict[str, Any]]:
+    query = f"SELECT {', '.join(CUSTOMER_SELECT_FIELDS)} FROM customers WHERE id = ?"
+    with get_connection() as conn:
+        cursor = conn.execute(query, (int(customer_id),))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def fetch_customers(search: Optional[str] = None) -> List[Dict[str, Any]]:
+    query = f"SELECT {', '.join(CUSTOMER_SELECT_FIELDS)} FROM customers"
+    params: List[Any] = []
+    if search:
+        text = f"%{search.lower()}%"
+        query += (
+            " WHERE LOWER(full_name) LIKE ? OR LOWER(COALESCE(phone, '')) LIKE ?"
+            " OR LOWER(COALESCE(email, '')) LIKE ?"
+        )
+        params.extend([text, text, text])
+    query += " ORDER BY LOWER(full_name)"
+    with get_connection() as conn:
+        cursor = conn.execute(query, params)
+        rows = cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_customers_for_sheet() -> List[Dict[str, Any]]:
+    return fetch_customers()
+
+
+def mark_item_sold(
+    item_id: str,
+    *,
+    customer_id: int,
+    sale_price: Optional[Any] = None,
+    note: Optional[str] = None,
+    sold_at: Optional[str] = None,
+) -> None:
+    if not item_id:
+        raise ValueError("item_id is required")
+    if customer_id is None:
+        raise ValueError("customer_id is required")
+
+    try:
+        numeric_price = None if sale_price in (None, "") else float(sale_price)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sale_price must be numeric") from exc
+
+    sold_timestamp = sold_at or _now_iso()
+    now = _now_iso()
+    updated_by = _default_updated_by()
+    cleaned_note = (note or "").strip() or None
+
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE item
+            SET status = 'sold',
+                sold_at = ?,
+                customer_id = ?,
+                sale_price = ?,
+                sale_note = ?,
+                qty = 0,
+                updated_at = ?,
+                updated_by = ?,
+                version = COALESCE(version, 0) + 1
+            WHERE item_id = ?
+            """,
+            (
+                sold_timestamp,
+                int(customer_id),
+                numeric_price,
+                cleaned_note,
+                now,
+                updated_by,
+                item_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError(f"Item {item_id} not found")
+        conn.commit()
+
+    _notify_item_upsert(item_id)
+
+
+def get_sales_summary(days: Optional[int] = None) -> Dict[str, float]:
+    base_query = (
+        "SELECT COUNT(*) AS total_count, "
+        "COALESCE(SUM(COALESCE(sale_price, sp, 0)), 0) AS total_revenue "
+        "FROM item WHERE LOWER(COALESCE(status, '')) = 'sold'"
+    )
+    params: List[Any] = []
+    if days is not None:
+        start = datetime.utcnow() - timedelta(days=days)
+        params.append(start.replace(microsecond=0).isoformat())
+        base_query += " AND sold_at >= ?"
+
+    with get_connection() as conn:
+        cursor = conn.execute(base_query, params)
+        row = cursor.fetchone()
+
+    count = int(row[0]) if row and row[0] is not None else 0
+    total = float(row[1]) if row and row[1] is not None else 0.0
+    average = total / count if count else 0.0
+    return {"count": count, "total": total, "average": average}
 
 
 def _parse_numeric(value: str) -> Optional[float]:
