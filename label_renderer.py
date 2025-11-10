@@ -52,6 +52,20 @@ def ensure_pillow() -> bool:
     )
     return False
 
+
+def measure_text(draw: "ImageDraw.ImageDraw", text: str, font: Any) -> Tuple[int, int]:
+    """Measure text dimensions with compatibility across Pillow versions."""
+
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+    except AttributeError:
+        width, height = font.getsize(text)
+    else:
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+    return int(width), int(height)
+
+
 import db
 from settings import DymoLabelSettings, FontSpec, load_settings
 
@@ -192,7 +206,9 @@ class DymoLabelRenderer:
             return cached, None
         font = ImageFont.load_default()
         self._font_cache[key] = font
-        return font, warning
+        return font, warning or (
+            "TrueType fonts were unavailable. Using Pillow's default font."
+        )
 
     def _load_font(self, spec: FontSpec) -> Tuple[Any, Optional[str]]:
         if not PIL_AVAILABLE:
@@ -204,14 +220,23 @@ class DymoLabelRenderer:
         if self._force_default_font:
             warning = self._default_font_warning
             return self._use_default_font(spec, warning)
+        size_px = self._pt_to_px(spec.size_pt)
         try:
-            font = ImageFont.truetype(spec.name, self._pt_to_px(spec.size_pt))
+            font = ImageFont.truetype(spec.name, size_px)
         except OSError:
-            warning = (
-                f"TrueType font '{spec.name}' could not be found. Using the default Pillow font."
-            )
-            self.use_default_font_fallback(warning)
-            return self._use_default_font(spec, warning)
+            missing_warning = f"TrueType font '{spec.name}' could not be found."
+            try:
+                font = ImageFont.truetype("arial.ttf", size_px)
+            except OSError:
+                default_warning = (
+                    f"{missing_warning} Arial was also unavailable. Using Pillow's default font."
+                )
+                self.use_default_font_fallback(default_warning)
+                return self._use_default_font(spec, default_warning)
+            else:
+                fallback_warning = f"{missing_warning} Using Arial as a fallback where available."
+                self._font_cache[key] = font
+                return font, fallback_warning
         else:
             self._font_cache[key] = font
             return font, None
@@ -359,7 +384,7 @@ class DymoLabelRenderer:
         collection_value = (item.get("collection") or "").strip()
         if collection_value:
             text = f"{collection_value.lower()} collection"
-            text_width, text_height = collection_font.getsize(text)
+            text_width, text_height = measure_text(draw, text, collection_font)
             draw.text(
                 (
                     margin_left + (content_width - text_width) / 2,
@@ -384,7 +409,7 @@ class DymoLabelRenderer:
         column_spacing = self._mm_to_px(layout_spec.column_spacing_mm)
         max_label_width = 0
         for label, _ in field_rows:
-            width, _ = label_font.getsize(f"{label}:")
+            width, _ = measure_text(draw, f"{label}:", label_font)
             max_label_width = max(max_label_width, width)
         value_x = margin_left + max_label_width + self._mm_to_px(2)
         column_break = margin_left + content_width / 2 + column_spacing / 2
@@ -399,9 +424,9 @@ class DymoLabelRenderer:
             for label, value in rows:
                 label_text = f"{label}:"
                 draw.text((start_x, y_pos), label_text, fill=0, font=label_font)
-                lw, lh = label_font.getsize(label_text)
+                lw, lh = measure_text(draw, label_text, label_font)
                 draw.text((start_x + max_label_width + self._mm_to_px(2), y_pos), value, fill=0, font=value_font)
-                _, vh = value_font.getsize(value)
+                _, vh = measure_text(draw, value, value_font)
                 row_height = max(lh, vh)
                 y_pos += row_height + self._mm_to_px(layout_spec.field_gap_mm)
             return y_pos
@@ -424,7 +449,7 @@ class DymoLabelRenderer:
             warnings.append(warn)
         for index, line in enumerate(price_lines):
             font = msrp_font if line.startswith("MSRP") else price_font
-            tw, th = font.getsize(line)
+            tw, th = measure_text(draw, line, font)
             draw.text((margin_left + (content_width - tw) / 2, current_y), line, fill=0, font=font)
             current_y += th + self._mm_to_px(layout_spec.field_gap_mm)
 
@@ -434,7 +459,7 @@ class DymoLabelRenderer:
             sku_font, warn = self._load_font(sku_spec) if sku_spec else (ImageFont.load_default(), None)
             if warn:
                 warnings.append(warn)
-            _, text_height = sku_font.getsize(sku_value)
+            _, text_height = measure_text(draw, sku_value, sku_font)
             y_position = height_px - margin_bottom - text_height
             draw.text((margin_left, y_position), f"SKU {sku_value}", fill=0, font=sku_font)
 
@@ -499,4 +524,5 @@ __all__ = [
     "PIL_AVAILABLE",
     "PIL_IMPORT_MESSAGE",
     "ensure_pillow",
+    "measure_text",
 ]
