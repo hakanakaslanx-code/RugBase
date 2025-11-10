@@ -97,7 +97,9 @@ def init_client(
                         os.remove(token_path)
                     except OSError:
                         logger.debug("Unable to remove stale token file %s", token_path, exc_info=True)
-                raise AuthenticationError("Stored Google Drive oturumu geçersiz. Yeniden yetkilendirme gerekli.") from exc
+                raise AuthenticationError(
+                    "Stored Google Drive session is invalid. Reauthorization required."
+                ) from exc
         else:
             flow = InstalledAppFlow.from_client_secrets_file(secret_path, scopes)
             credentials = flow.run_local_server(port=0)

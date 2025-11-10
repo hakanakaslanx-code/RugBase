@@ -36,7 +36,7 @@ def _install_requirements(project_dir: pathlib.Path) -> None:
     requirements = project_dir / "requirements.txt"
     if not requirements.exists():  # pragma: no cover - defensive guard
         raise SystemExit(
-            "requirements.txt dosyası bulunamadı. Google bağımlılıklarını manuel olarak yükleyin."
+            "requirements.txt could not be found. Install the Google dependencies manually."
         )
 
     subprocess.check_call(
@@ -52,12 +52,12 @@ def _prepare_google_dependencies(project_dir: pathlib.Path) -> None:
         _install_requirements(project_dir)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(
-            "Google bağımlılıkları otomatik olarak yüklenemedi. 'pip install -r requirements.txt' komutunu manuel çalıştırın."
+            "Google dependencies could not be installed automatically. Run 'pip install -r requirements.txt' manually."
         ) from exc
 
     if not _check_google_dependencies():
         raise SystemExit(
-            "Google bağımlılıkları import edilemedi. Paketlemeyi tekrar denemeden önce eksik kütüphaneleri kurun."
+            "Google dependencies could not be imported. Install the missing libraries before packaging again."
         )
 
 

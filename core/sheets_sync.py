@@ -296,7 +296,7 @@ def parse_spreadsheet_id(value: str) -> str:
 def _require_api() -> None:
     if not GOOGLE_API_AVAILABLE:
         raise MissingDependencyError(
-            "google-api-python-client bulunamadı. Lütfen bağımlılıkları yükleyin."
+            "google-api-python-client was not found. Please install the dependencies."
         )
 
 
@@ -306,7 +306,7 @@ def get_client(credentials_path: str):
     _require_api()
     path = Path(os.path.expanduser(credentials_path)).resolve()
     if not path.exists():
-        raise CredentialsFileNotFoundError(f"Kimlik dosyası bulunamadı: {path}")
+        raise CredentialsFileNotFoundError(f"Credentials file not found: {path}")
 
     try:
         credentials = service_account.Credentials.from_service_account_file(  # type: ignore[union-attr]
@@ -314,7 +314,7 @@ def get_client(credentials_path: str):
         )
     except ValueError as exc:  # pragma: no cover - invalid key file
         raise CredentialsFileInvalidError(
-            "Kimlik dosyası okunamadı. JSON formatını doğrulayın."
+            "Credentials file could not be read. Verify the JSON format."
         ) from exc
     return build("sheets", "v4", credentials=credentials, cache_discovery=False)  # type: ignore[call-arg]
 
@@ -472,7 +472,7 @@ def _call_with_retry(func: Callable[[], Any], description: str) -> Tuple[Any, in
             delay = BACKOFF_SCHEDULE[min(attempt, len(BACKOFF_SCHEDULE) - 1)]
             attempt += 1
             logger.warning(
-                "Sheets API %s hatası (%s). %ss sonra tekrar denenecek (%d/%d)",
+                "Sheets API %s error (%s). Retrying in %ss (%d/%d)",
                 description,
                 status,
                 delay,
@@ -636,7 +636,7 @@ def _ensure_sheet_structure(
                 customer_sheet_id = properties.get("sheetId")
 
     if worksheet_id is None:
-        raise SpreadsheetAccessError("Worksheet bulunamadı veya oluşturulamadı.")
+        raise SpreadsheetAccessError("Worksheet could not be found or created.")
 
     # Ensure headers present
     header_range = f"{worksheet_title}!A1:{_column_a1(len(HEADERS) - 1)}1"
@@ -798,7 +798,7 @@ def _sync_customers_sheet(
 
     if not customers:
         if log_callback:
-            log_callback("Customers sheet cleared (0 kayıt).")
+            log_callback("Customers sheet cleared (0 rows).")
         return 0
 
     rows: List[List[str]] = []
@@ -822,7 +822,7 @@ def _sync_customers_sheet(
         ],
     )
     if log_callback:
-        log_callback(f"Customers sheet senkronize edildi ({len(rows)} kayıt).")
+        log_callback(f"Customers sheet synchronized ({len(rows)} rows).")
     return len(rows)
 
 
@@ -995,7 +995,7 @@ def resolve_conflict(
             with path.open("w", encoding="utf-8") as handle:
                 json.dump(row, handle, ensure_ascii=False, indent=2)
         except OSError:  # pragma: no cover - filesystem guard
-            logger.warning("Çakışma yedeği yazılamadı: %s", path, exc_info=True)
+            logger.warning("Conflict backup could not be written: %s", path, exc_info=True)
 
     if field_diffs:
         _backup(local_row, "local")
@@ -1084,7 +1084,7 @@ def _flush_outbox(
             [{"range": a1_range, "values": [row.as_list()]}],
         )
         if log_callback:
-            log_callback(f"Outbox kaydı işlendi: {row_id}")
+            log_callback(f"Outbox entry processed: {row_id}")
 
     processed = _OUTBOX.drain(_replay)
     return processed
@@ -1105,7 +1105,7 @@ def push(
 
     parsed_id = parse_spreadsheet_id(spreadsheet_id)
     if not parsed_id:
-        raise SpreadsheetAccessError("Geçerli bir Sheet ID gerekli.")
+        raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
     service = get_client(credential_path)
     worksheet_id = _ensure_sheet_structure(service, parsed_id, worksheet_title)
@@ -1113,7 +1113,7 @@ def push(
     try:
         customer_rows = db.fetch_customers_for_sheet()
     except Exception as exc:  # pragma: no cover - defensive guard
-        raise SpreadsheetAccessError(f"Müşteri verileri okunamadı: {exc}") from exc
+        raise SpreadsheetAccessError(f"Customer data could not be read: {exc}") from exc
 
     try:
         customer_synced = _sync_customers_sheet(
@@ -1123,7 +1123,7 @@ def push(
             log_callback=log_callback,
         )
     except Exception as exc:  # pragma: no cover - network/IO guard
-        raise SpreadsheetAccessError(f"Customers sheet güncellenemedi: {exc}") from exc
+        raise SpreadsheetAccessError(f"Customers sheet could not be updated: {exc}") from exc
 
     processed_outbox = 0
     try:
@@ -1135,9 +1135,9 @@ def push(
             log_callback=log_callback,
         )
     except Exception as exc:  # pragma: no cover - network/IO guard
-        raise SpreadsheetAccessError(f"Outbox kuyruğu gönderilemedi: {exc}") from exc
+        raise SpreadsheetAccessError(f"Outbox queue could not be sent: {exc}") from exc
     if processed_outbox and log_callback:
-        log_callback(f"Bekleyen {processed_outbox} satır gönderildi.")
+        log_callback(f"Queued {processed_outbox} rows uploaded.")
 
     start = time.monotonic()
     with _connect(db_path) as conn:
@@ -1153,7 +1153,7 @@ def push(
     for row in detected_new_rows:
         if _debounce_row(row.row_id):
             if log_callback:
-                log_callback(f"{row.row_id} kaydı debounce nedeniyle bekletildi.")
+                log_callback(f"Entry {row.row_id} delayed due to debounce.")
             continue
         new_rows.append(row)
 
@@ -1161,7 +1161,7 @@ def push(
     for row in changed_rows:
         if _debounce_row(row.row_id):
             if log_callback:
-                log_callback(f"{row.row_id} kaydı debounce nedeniyle atlandı.")
+                log_callback(f"Entry {row.row_id} skipped due to debounce.")
             continue
         remote = remote_index.get(row.row_id)
         target_index = remote.row_index if remote else row.row_index
@@ -1191,13 +1191,13 @@ def push(
             except Exception as exc:  # pragma: no cover - network/IO guard
                 _queue_failed_rows(row for _, row in batch)
                 raise SpreadsheetAccessError(
-                    f"Sheets güncellemesi başarısız: {exc}"
+                    f"Sheets update failed: {exc}"
                 ) from exc
             total_written += len(batch)
             total_retries += retries
             if log_callback:
                 log_callback(
-                    f"{len(batch)} satır güncellendi (retry={retries})."
+                    f"{len(batch)} rows updated (retry={retries})."
                 )
 
     if new_rows:
@@ -1218,13 +1218,13 @@ def push(
             except Exception as exc:  # pragma: no cover - network/IO guard
                 _queue_failed_rows(batch)
                 raise SpreadsheetAccessError(
-                    f"Sheets ekleme işlemi başarısız: {exc}"
+                    f"Sheets insert failed: {exc}"
                 ) from exc
             total_written += len(batch)
             total_retries += retries
             if log_callback:
                 log_callback(
-                    f"{len(batch)} yeni satır eklendi (retry={retries})."
+                    f"{len(batch)} new rows added (retry={retries})."
                 )
 
     if total_written:
@@ -1272,7 +1272,7 @@ def pull(
 
     parsed_id = parse_spreadsheet_id(spreadsheet_id)
     if not parsed_id:
-        raise SpreadsheetAccessError("Geçerli bir Sheet ID gerekli.")
+        raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
     service = get_client(credential_path)
     _ensure_sheet_structure(service, parsed_id, worksheet_title)
@@ -1335,7 +1335,7 @@ def pull(
     )
 
     if log_callback:
-        log_callback(f"{applied} satır güncellendi.")
+        log_callback(f"{applied} rows updated.")
 
     return {"applied": applied, "total_remote": len(remote_rows)}
 
@@ -1347,7 +1347,7 @@ def latest_remote_updated_at(
 ) -> Optional[str]:
     parsed_id = parse_spreadsheet_id(spreadsheet_id)
     if not parsed_id:
-        raise SpreadsheetAccessError("Geçerli bir Sheet ID gerekli.")
+        raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
     try:
         updated_index = HEADERS.index("UpdatedAt") + 1
@@ -1386,7 +1386,7 @@ def health_check(
 
     parsed_id = parse_spreadsheet_id(spreadsheet_id)
     if not parsed_id:
-        raise SpreadsheetAccessError("Geçerli bir Sheet ID gerekli.")
+        raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
     service = get_client(credential_path)
     worksheet_id = _ensure_sheet_structure(service, parsed_id, worksheet_title)
@@ -1399,7 +1399,7 @@ def health_check(
     try:
         remote_rows = _read_remote_rows(service, parsed_id, worksheet_title)
     except HttpError as exc:  # pragma: no cover - network interaction
-        raise SpreadsheetAccessError(f"Sheets read başarısız: {exc}") from exc
+        raise SpreadsheetAccessError(f"Sheets read failed: {exc}") from exc
     report["row_count"] = len(remote_rows)
     return report
 

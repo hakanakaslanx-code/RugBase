@@ -120,7 +120,7 @@ def _default_credentials_path() -> Path:
 def _load_credentials(path: Optional[Path] = None):
     if not GOOGLE_API_AVAILABLE:
         raise MissingDependencyError(
-            "google-api-python-client bulunamadı. Google Sheets senkronu devre dışı."
+            "google-api-python-client was not found. Google Sheets sync is disabled."
         )
 
     credentials_path = path or _default_credentials_path()
@@ -134,7 +134,7 @@ def _load_credentials(path: Optional[Path] = None):
 def _build_service(credentials=None):
     if not GOOGLE_API_AVAILABLE:
         raise MissingDependencyError(
-            "google-api-python-client bulunamadı. Google Sheets senkronu devre dışı."
+            "google-api-python-client was not found. Google Sheets sync is disabled."
         )
     if credentials is None:
         credentials = _load_credentials()

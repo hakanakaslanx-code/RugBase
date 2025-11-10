@@ -11,8 +11,8 @@ Image = None  # type: ignore[assignment]
 ImageDraw = None  # type: ignore[assignment]
 ImageFont = None  # type: ignore[assignment]
 PIL_IMPORT_MESSAGE = (
-    "Pillow (PIL) etiket üretimi için gereklidir. Paketi kurulum sırasında"
-    " dahil edin veya geliştirme ortamında 'pip install Pillow' komutunu çalıştırın."
+    "Pillow (PIL) is required for label generation. Include the package during"
+    " installation or run 'pip install Pillow' in the development environment."
 )
 
 
@@ -47,8 +47,8 @@ def ensure_pillow() -> bool:
         return True
 
     PIL_IMPORT_MESSAGE = (
-        "Pillow (PIL) bulunamadı. Lütfen uygulama paketini yeniden oluşturun"
-        " veya geliştirme sırasında 'pip install Pillow' komutunu uygulayın."
+        "Pillow (PIL) was not found. Rebuild the application package"
+        " or run 'pip install Pillow' while developing."
     )
     return False
 

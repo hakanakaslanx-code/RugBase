@@ -23,16 +23,16 @@ from core.hash import file_sha256
 
 logger = logging.getLogger(__name__)
 
-DEPENDENCY_ERROR_MESSAGE = "Senkron modülü eksik, lütfen kurulum paketini yeniden yükleyin."
+DEPENDENCY_ERROR_MESSAGE = "The sync module is missing; please reinstall the distribution package."
 
 
 def _raise_dependency_error() -> NoReturn:
     missing = deps_bootstrap.missing_dependencies()
-    details = ", ".join(missing) if missing else "bilinmiyor"
-    logger.error("[Deps] Google modülleri eksik: %s", details)
+    details = ", ".join(missing) if missing else "unknown"
+    logger.error("[Deps] Google modules missing: %s", details)
     message = DEPENDENCY_ERROR_MESSAGE
     if missing:
-        message += f" Eksik paketler: {details}"
+        message += f" Missing packages: {details}"
     raise SyncConfigurationError(message)
 
 
@@ -51,12 +51,12 @@ def _iter_site_directories() -> Iterable[str]:
             if path:
                 candidates.append(path)
     except Exception:  # pragma: no cover - environment dependent
-        logger.debug("[Deps] Global site-packages konumu okunamadı", exc_info=True)
+        logger.debug("[Deps] Global site-packages location could not be read", exc_info=True)
 
     try:
         user_site = site.getusersitepackages()
     except Exception:  # pragma: no cover - environment dependent
-        logger.debug("[Deps] Kullanıcı site-packages konumu okunamadı", exc_info=True)
+        logger.debug("[Deps] User site-packages location could not be read", exc_info=True)
         user_site = None
     if isinstance(user_site, str) and user_site:
         candidates.append(user_site)
@@ -95,10 +95,9 @@ def _refresh_site_packages() -> None:
 app_paths.ensure_app_structure()
 
 SECURITY_NOTE = (
-    "ÖNEMLİ: Paylaşılan servis hesabı anahtarları (private key/id) depolanırken "
-    "şifrelenmeli ya da dosya izinleri kısıtlanmalıdır. Anahtar GitHub’a asla "
-    "commit edilmemelidir. Halihazırda bir anahtar açık şekilde paylaşıldıysa "
-    "derhal rotate edilmelidir."
+    "IMPORTANT: When storing shared service account keys (private key/id), ensure"
+    " they are encrypted or file permissions are restricted. Keys must never be"
+    " committed to GitHub. If a key has already been exposed, rotate it immediately."
 )
 
 logger.warning("[Drive] %s", SECURITY_NOTE)
@@ -179,7 +178,7 @@ def _resolve_token_path(token_path: Optional[str]) -> str:
         parts = [part.lower() for part in expanded.parts]
         if "desktop" in parts:
             logger.warning(
-                "[Drive] Token path masaüstünde olamaz; varsayılan konum kullanılacak"
+                "[Drive] Token path cannot be on the desktop; default location will be used"
             )
         else:
             default_path = expanded
@@ -226,13 +225,13 @@ def _normalise_client_secret_path(candidate: Optional[str]) -> str:
             os.chmod(destination, S_IRUSR | S_IWUSR)
         except OSError:
             logger.debug(
-                "[Drive] Dosya izinleri ayarlanamadı: %s", destination, exc_info=True
+                "[Drive] File permissions could not be set: %s", destination, exc_info=True
             )
     except OSError as exc:
         raise RuntimeError(
             f"Unable to copy client secret to {destination}: {exc}"
         ) from exc
-    logger.info("[Drive] Service account dosyası %s konumuna kopyalandı", destination)
+    logger.info("[Drive] Service account file copied to %s", destination)
     return str(destination)
 
 
@@ -293,11 +292,11 @@ def load_settings() -> Dict[str, object]:
             normalised_secret = _normalise_client_secret_path(secret_candidate)
         except FileNotFoundError:
             logger.warning(
-                "[Drive] Tanımlanan service account dosyası bulunamadı: %s", secret_candidate
+                "[Drive] Specified service account file not found: %s", secret_candidate
             )
             normalised_secret = _default_client_secret_path()
         except RuntimeError as exc:
-            logger.error("[Drive] Service account kaydedilemedi: %s", exc)
+            logger.error("[Drive] Failed to save service account: %s", exc)
             raise
     if defaults.get("client_secret_path") != normalised_secret:
         defaults["client_secret_path"] = normalised_secret
@@ -356,7 +355,7 @@ def _create_service(settings: Dict[str, object]):
             drive_api.DEFAULT_SCOPES,
         )
     except drive_api.AuthenticationError as exc:
-        message = f"{exc}. Anahtarları rotasyon yapın."
+        message = f"{exc}. Rotate the keys."
         raise SyncAuthenticationRequired(message) from exc
 
 
@@ -525,7 +524,7 @@ class DriveSync:
         except OSError as exc:
             logger.error("Failed to back up local database to %s: %s", backup_path, exc)
             return None
-        logger.info("[Drive] Yerel veritabanı yedeklendi: %s", backup_path)
+        logger.info("[Drive] Local database backed up: %s", backup_path)
         return backup_path
 
     def _log_conflict(self, settings: Dict[str, object], local_hash: Optional[str], remote_hash: Optional[str], local_mtime: Optional[datetime], remote_mtime: Optional[datetime]) -> None:
@@ -616,7 +615,7 @@ class DriveSync:
             try:
                 self._copy_to_backups(service, file_id, structure)
             except Exception:  # pragma: no cover - defensive
-                logger.warning("[Drive] Uzak çatışma yedeği oluşturulamadı", exc_info=True)
+                logger.warning("[Drive] Remote conflict backup could not be created", exc_info=True)
             self._log_conflict(settings, local_hash, remote_hash, local_mtime, remote_mtime)
             self._conflict_pending = True
             self._pending_conflict_backup = backup_path

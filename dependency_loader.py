@@ -41,8 +41,8 @@ HIDDEN_IMPORTS: Iterable[str] = (
 )
 
 _MISSING_DEPENDENCY_MESSAGE = (
-    "Senkron modülü eksik. Kurulum paketini yeniden yükleyin veya geliştirme "
-    "ortamında 'pip install -r requirements.txt' çalıştırıp PyInstaller ile yeniden paketleyin."
+    "The sync module is missing. Reinstall the distribution package or run "
+    "'pip install -r requirements.txt' in the development environment and rebuild with PyInstaller."
 )
 
 _runtime_root: Optional[Path] = None
@@ -96,7 +96,7 @@ def bootstrap() -> bool:
         logger.warning("[Deps] %s", _MISSING_DEPENDENCY_MESSAGE)
     else:
         os.environ.pop("RUGBASE_DEPENDENCY_WARNING", None)
-        logger.info("[Deps] Google bağımlılıkları başarıyla yüklendi.")
+        logger.info("[Deps] Google dependencies loaded successfully.")
 
     _initialised = True
     return _google_available

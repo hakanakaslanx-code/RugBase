@@ -1,25 +1,25 @@
 # RugBase
 
-## Kurulum
-1. Depoyu klonladıktan sonra proje kök dizininde `pip install -r requirements.txt` komutunu çalıştırarak Google Drive/Sheets bağımlılıklarını yükleyin.
-2. Masaüstü uygulamasını geliştirme ortamında çalıştıracaksanız `python app.py` komutu yeterlidir.
+## Installation
+1. After cloning the repository, run `pip install -r requirements.txt` in the project root to install the Google Drive/Sheets dependencies.
+2. To run the desktop application in a development environment, execute `python app.py`.
 
-## Google Sheets Senkronizasyonu
-1. Google Sheet'i `rugbase-sync@rugbase-sync.iam.gserviceaccount.com` hizmet hesabıyla **Editor** yetkisi vererek paylaşın.
-2. Uygulamayı başlatın ve menüden **Sync Settings** penceresini açın.
-3. "Service Account JSON" alanından `service_account.json` dosyasını seçin. Dosya seçildiğinde hizmet hesabı e-postası ve Private Key ID alanları otomatik doldurulur.
-4. "Bağımlılık Testi" butonu tüm Google kütüphanelerinin paketlemede yer aldığını doğrulamalıdır. Eksik paket uyarısı alırsanız `pip install -r requirements.txt` komutuyla ortamı güncelleyin ve PyInstaller ile yeniden paketleyin.
-5. "Erişimi Doğrula" butonu hem Google Drive hem de Google Sheets erişimini kontrol eder. Sheet paylaşımı eksikse pencere gerekli yönergeyi gösterir.
-6. Testler başarıyla tamamlandıktan sonra "Kaydet" diyerek ayarları kalıcı hale getirin ve ana pencereden senkronizasyonu başlatın.
+## Google Sheets Synchronization
+1. Share the Google Sheet with the service account `rugbase-sync@rugbase-sync.iam.gserviceaccount.com` and grant **Editor** access.
+2. Launch the application and open the **Sync Settings** window from the menu.
+3. Choose the `service_account.json` file in the “Service Account JSON” field. The service account email and Private Key ID fields are populated automatically when the file is selected.
+4. The “Dependency Test” button verifies that all Google libraries are included in the package. If any packages are missing, run `pip install -r requirements.txt` to update the environment and rebuild with PyInstaller.
+5. The “Verify Access” button checks both Google Drive and Google Sheets access. If the Sheet is not shared correctly, the window provides the necessary instructions.
+6. After the tests finish successfully, click “Save” to persist the settings and start synchronization from the main window.
 
-## PyInstaller ile Paketleme
-Uygulamayı paketlemeden önce bağımlılıkların import edilebildiğini doğrulayan kontrol, `build_exe.py` tarafından otomatik yapılır. Manuel olarak çalıştırmak için:
+## Packaging with PyInstaller
+`build_exe.py` automatically verifies that the dependencies can be imported before packaging. To run it manually:
 
 ```
 python build_exe.py
 ```
 
-Script şu PyInstaller çağrısını üretir:
+The script produces the following PyInstaller invocation:
 
 ```
 pyinstaller -y --name RugBase --noconsole \
@@ -30,4 +30,4 @@ pyinstaller -y --name RugBase --noconsole \
   --collect-submodules google --collect-submodules google.oauth2 app.py
 ```
 
-Servis hesabı, token ve log dosyaları Windows'ta `C:\Users\<USER>\AppData\Local\RugBase\` dizini altında tutulur; masaüstüne dosya bırakılmaz.
+Service account, token, and log files are stored under `C:\Users\<USER>\AppData\Local\RugBase\` on Windows; nothing is saved on the desktop.
