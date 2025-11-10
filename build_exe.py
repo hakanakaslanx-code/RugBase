@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from dependency_loader import HIDDEN_IMPORTS
+from core import deps_bootstrap
 
 
 def _hidden_import_args() -> list[str]:
@@ -17,19 +18,11 @@ def _hidden_import_args() -> list[str]:
     return args
 
 
-def _check_google_dependencies() -> bool:
-    check_cmd = [
-        sys.executable,
-        "-c",
-        "import googleapiclient.discovery; import google.oauth2.service_account",
-    ]
-    result = subprocess.run(
-        check_cmd,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return result.returncode == 0
+def _missing_runtime_dependencies() -> list[str]:
+    missing: list[str] = []
+    missing.extend(deps_bootstrap.check_google_deps())
+    missing.extend(deps_bootstrap.check_pillow_deps())
+    return missing
 
 
 def _install_requirements(project_dir: pathlib.Path) -> None:
@@ -44,20 +37,20 @@ def _install_requirements(project_dir: pathlib.Path) -> None:
     )
 
 
-def _prepare_google_dependencies(project_dir: pathlib.Path) -> None:
-    if _check_google_dependencies():
+def _prepare_runtime_dependencies(project_dir: pathlib.Path) -> None:
+    if not _missing_runtime_dependencies():
         return
 
     try:
         _install_requirements(project_dir)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(
-            "Google dependencies could not be installed automatically. Run 'pip install -r requirements.txt' manually."
+            "Required runtime dependencies could not be installed automatically. Run 'pip install -r requirements.txt' manually."
         ) from exc
 
-    if not _check_google_dependencies():
+    if _missing_runtime_dependencies():
         raise SystemExit(
-            "Google dependencies could not be imported. Install the missing libraries before packaging again."
+            "Required runtime dependencies could not be imported. Install the missing libraries before packaging again."
         )
 
 
@@ -67,7 +60,7 @@ def run() -> None:
 
     data_sep = os.pathsep
 
-    _prepare_google_dependencies(project_dir)
+    _prepare_runtime_dependencies(project_dir)
 
     try:
         import PyInstaller.__main__  # type: ignore
@@ -88,6 +81,7 @@ def run() -> None:
         "--collect-submodules=googleapiclient",
         "--collect-submodules=google",
         "--collect-submodules=google.oauth2",
+        "--collect-all=PIL",
         f"--add-data={project_dir / 'core'}{data_sep}core",
         f"--add-data={project_dir / 'ui_item_card.py'}{data_sep}.",
         f"--add-data={project_dir / 'ui_main.py'}{data_sep}.",

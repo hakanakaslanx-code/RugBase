@@ -25,6 +25,7 @@ def _notify_already_running() -> None:
 
 configure_logging()
 deps_bootstrap.ensure_google_deps()
+deps_bootstrap.ensure_pillow_deps()
 
 
 def main() -> None:
