@@ -1280,7 +1280,24 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
     for column, definition in TABLE_COLUMNS:
         if column not in existing_columns:
-            conn.execute(f"ALTER TABLE item ADD COLUMN {column} {definition}")
+            column_definition = definition
+            needs_unique_index = False
+
+            if "UNIQUE" in definition.upper():
+                # SQLite cannot add a column with a UNIQUE constraint using ALTER TABLE.
+                # Strip the UNIQUE constraint and enforce it with an index instead.
+                parts = [part for part in definition.split() if part.upper() != "UNIQUE"]
+                column_definition = " ".join(parts)
+                needs_unique_index = True
+
+            conn.execute(f"ALTER TABLE item ADD COLUMN {column} {column_definition}")
+
+            if needs_unique_index:
+                index_name = f"idx_item_{column}_unique"
+                conn.execute(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON item({column})"
+                )
+            existing_columns.add(column)
 
     # Normalise timestamps and versions for existing rows
     conn.execute("UPDATE item SET created_at = REPLACE(created_at, ' ', 'T') WHERE created_at LIKE '% %'")
