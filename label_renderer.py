@@ -581,27 +581,25 @@ class DymoLabelRenderer:
             else:
                 content_value = type_value
         shape_value = (item.get("shape") or "").strip()
-        standard_size = (item.get("st_size") or "").strip()
         actual_size = (item.get("a_size") or "").strip()
         rows: List[Tuple[str, str]] = []
         design_value = (item.get("design") or "").strip()
         if design_value:
             rows.append(("Design", design_value))
 
-        has_color_detail = False
-        if ground:
-            rows.append(("Ground", ground))
-            has_color_detail = True
-        if border:
-            rows.append(("Border", border))
-            has_color_detail = True
-        if not has_color_detail and color_value:
+        if color_value:
             rows.append(("Color", color_value))
 
-        if standard_size:
-            rows.append(("Std Size", standard_size))
+        if ground or border:
+            ground_text = ground or "-"
+            border_text = border or "-"
+            rows.append(("Ground / Border", f"{ground_text} - {border_text}"))
+
         if actual_size:
             rows.append(("Actual Size", actual_size))
+
+        if content_value:
+            rows.append(("Content", content_value))
 
         origin_value = (item.get("origin") or "").strip()
         if origin_value:
@@ -610,18 +608,18 @@ class DymoLabelRenderer:
         if style:
             rows.append(("Style", style))
 
-        if content_value:
-            rows.append(("Content", content_value))
-
         if shape_value:
             rows.append(("Type", shape_value))
         return rows
 
+    def _msrp_line(self, item: Dict[str, object]) -> Optional[str]:
+        msrp = item.get("msrp") or item.get("MSRP")
+        if not msrp:
+            return None
+        return f"MSRP $ {str(msrp).strip()}"
+
     def _format_price_lines(self, item: Dict[str, object]) -> List[str]:
         lines: List[str] = []
-        msrp = item.get("msrp") or item.get("MSRP")
-        if msrp:
-            lines.append(f"MSRP $ {str(msrp).strip()}")
         price = item.get("sp") or item.get("SP")
         if price:
             lines.append(f"Price $ {str(price).strip()}")
@@ -716,18 +714,54 @@ class DymoLabelRenderer:
         else:
             barcode_font = value_font
 
+        msrp_line = self._msrp_line(item)
+        price_lines = self._format_price_lines(item)
+
+        price_font_spec = self.settings.fonts.get("price")
+        if price_font_spec:
+            price_font, warn = self._load_font(price_font_spec)
+            if warn:
+                warnings.append(warn)
+        else:
+            price_font = ImageFont.load_default()
+
+        msrp_font_spec = self.settings.fonts.get("msrp")
+        if msrp_font_spec:
+            msrp_font, warn = self._load_font(msrp_font_spec)
+            if warn:
+                warnings.append(warn)
+        else:
+            msrp_font = price_font
+
+        label_y = barcode_label_y
+        if msrp_line:
+            msrp_text_width, msrp_text_height = measure_text(draw, msrp_line, msrp_font)
+            draw.text(
+                (
+                    margin_left + (content_width - msrp_text_width) / 2,
+                    label_y,
+                ),
+                msrp_line,
+                fill=0,
+                font=msrp_font,
+            )
+            label_y += msrp_text_height + text_padding_px
+
         if barcode_text:
             barcode_text_width, barcode_text_height = measure_text(draw, barcode_text, barcode_font)
             draw.text(
                 (
                     margin_left + (content_width - barcode_text_width) / 2,
-                    barcode_label_y,
+                    label_y,
                 ),
                 barcode_text,
                 fill=0,
                 font=barcode_font,
             )
-            current_y = barcode_label_y + barcode_text_height + text_padding_px
+            label_y += barcode_text_height + text_padding_px
+
+        if msrp_line or barcode_text:
+            current_y = label_y
         else:
             current_y = barcode_label_y + text_padding_px
 
@@ -791,15 +825,6 @@ class DymoLabelRenderer:
 
         current_y += self._mm_to_px(layout_spec.section_gap_mm)
 
-        price_lines = self._format_price_lines(item)
-        price_font_spec = self.settings.fonts.get("price")
-        price_font, warn = self._load_font(price_font_spec) if price_font_spec else (ImageFont.load_default(), None)
-        if warn:
-            warnings.append(warn)
-        msrp_font_spec = self.settings.fonts.get("msrp") or price_font_spec
-        msrp_font, warn = self._load_font(msrp_font_spec) if msrp_font_spec else (price_font, None)
-        if warn:
-            warnings.append(warn)
         for index, line in enumerate(price_lines):
             font = msrp_font if line.startswith("MSRP") else price_font
             tw, th = measure_text(draw, line, font)
