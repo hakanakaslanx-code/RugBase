@@ -35,14 +35,14 @@ DEFAULT_CREDENTIALS_PATH = str(_CREDENTIALS_TARGET)
 DEFAULT_CONFIG = {
     "dymo_label": {
         "pdf_reference": "rdlcBarcodePrintingDymoVerticleWithMsrp.pdf",
-        "width_mm": 57.15,
-        "height_mm": 190.5,
+        "width_mm": 78.23,
+        "height_mm": 135.38,
         "dpi": 300,
         "margins_mm": {
-            "top": 1.5,
-            "right": 1.5,
-            "bottom": 1.5,
-            "left": 1.5,
+            "top": 2.5,
+            "right": 2.5,
+            "bottom": 2.5,
+            "left": 2.5,
         },
         "barcode": {
             "narrow_bar_mm": 0.25,
@@ -64,6 +64,7 @@ DEFAULT_CONFIG = {
             "price": {"name": "arialbd.ttf", "size_pt": 18},
             "msrp": {"name": "arial.ttf", "size_pt": 14},
             "sku": {"name": "arial.ttf", "size_pt": 10},
+            "barcode_text": {"name": "arialbd.ttf", "size_pt": 16},
         },
     }
 }
@@ -176,14 +177,14 @@ def load_settings(path: str = DEFAULT_SETTINGS_PATH) -> DymoLabelSettings:
     layout = dymo.get("layout", {})
     return DymoLabelSettings(
         pdf_reference=dymo.get("pdf_reference"),
-        width_mm=float(dymo.get("width_mm", 57.15)),
-        height_mm=float(dymo.get("height_mm", 190.5)),
+        width_mm=float(dymo.get("width_mm", 78.23)),
+        height_mm=float(dymo.get("height_mm", 135.38)),
         dpi=int(dymo.get("dpi", 300)),
         margins=MarginSpec(
-            top=float(margins.get("top", 1.5)),
-            right=float(margins.get("right", 1.5)),
-            bottom=float(margins.get("bottom", 1.5)),
-            left=float(margins.get("left", 1.5)),
+            top=float(margins.get("top", 2.5)),
+            right=float(margins.get("right", 2.5)),
+            bottom=float(margins.get("bottom", 2.5)),
+            left=float(margins.get("left", 2.5)),
         ),
         barcode=BarcodeSpec(
             narrow_bar_mm=float(barcode.get("narrow_bar_mm", 0.25)),

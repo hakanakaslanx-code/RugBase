@@ -12,9 +12,18 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency at runtime
     ImageTk = None  # type: ignore[assignment]
 
 import db
-from label_renderer import DymoLabelRenderer, PIL_AVAILABLE, PIL_IMPORT_MESSAGE, ensure_pillow
+from label_renderer import (
+    DymoLabelRenderer,
+    PIL_AVAILABLE,
+    PIL_IMPORT_MESSAGE,
+    ensure_pillow,
+    install_pillow,
+)
 
-MISSING_PILLOW_TEXT = "Label features are unavailable without the Pillow library."
+MISSING_PILLOW_TEXT = (
+    "Pillow (PIL) gerekli. Aşağıdaki 'Pillow Kur' düğmesi ile kurulumu"
+    " tamamlayın ve ardından uygulamayı yeniden başlatın."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +79,9 @@ class LabelGeneratorWindow:
             self.warning_var.set(
                 "Preview requires Pillow's ImageTk module. Preview rendering is disabled."
             )
+            self._hide_install_button()
+        else:
+            self._hide_install_button()
 
     # region UI setup
     def _build_layout(self) -> None:
@@ -156,6 +168,12 @@ class LabelGeneratorWindow:
             wraplength=360,
         )
         self.warning_label.pack(fill=tk.X, pady=(6, 0))
+
+        self.install_pillow_button = ttk.Button(
+            preview_frame,
+            text="Pillow Kur (Yeniden Başlat Gerekli)",
+            command=self._install_pillow,
+        )
 
     def _build_buttons(self, container: ttk.Frame) -> None:
         button_frame = ttk.Frame(container)
@@ -265,6 +283,15 @@ class LabelGeneratorWindow:
         self.preview_label.configure(
             text=MISSING_PILLOW_TEXT,
         )
+        self._show_install_button()
+
+    def _show_install_button(self) -> None:
+        if not self.install_pillow_button.winfo_manager():
+            self.install_pillow_button.pack(fill=tk.X, pady=(6, 0))
+
+    def _hide_install_button(self) -> None:
+        if self.install_pillow_button.winfo_manager():
+            self.install_pillow_button.pack_forget()
 
     def _update_preview(self) -> None:
         if not self._pillow_ready:
@@ -278,6 +305,7 @@ class LabelGeneratorWindow:
                 text="Preview unavailable. Pillow's ImageTk module could not be imported.",
             )
             return
+        self._hide_install_button()
         selected = self._get_selected_items()
         if len(selected) != 1:
             self._clear_preview()
@@ -369,6 +397,27 @@ class LabelGeneratorWindow:
             messagebox.showwarning(title, f"{message}\n\nWarnings:\n- " + "\n- ".join(warnings))
         else:
             messagebox.showinfo(title, message)
+
+    def _install_pillow(self) -> None:
+        if self.install_pillow_button["state"] == tk.DISABLED:
+            return
+        self.install_pillow_button.configure(state=tk.DISABLED)
+        self.warning_var.set("Pillow kurulumu başlatılıyor...")
+        self.window.update_idletasks()
+        success, details = install_pillow()
+        if details:
+            logger.info("Pillow install output:\n%s", details)
+        if success:
+            message = "Pillow kurulumu tamamlandı. Lütfen RugBase uygulamasını yeniden başlatın."
+            self.warning_var.set(message)
+            messagebox.showinfo("Pillow Kurulumu", message)
+        else:
+            self.warning_var.set("Pillow kurulumu tamamlanamadı. Ayrıntılar için uyarıya bakın.")
+            messagebox.showerror(
+                "Pillow Kurulumu",
+                "Kurulum tamamlanamadı. Ayrıntılar:\n\n" + (details or "Bilinmeyen hata."),
+            )
+            self.install_pillow_button.configure(state=tk.NORMAL)
 
     def apply_theme(self, palette: Dict[str, str]) -> None:
         self.window.configure(bg=palette["background"])

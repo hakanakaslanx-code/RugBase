@@ -1,14 +1,14 @@
 {
   "dymo_label": {
     "pdf_reference": "rdlcBarcodePrintingDymoVerticleWithMsrp.pdf",
-    "width_mm": 57.15,
-    "height_mm": 190.5,
+    "width_mm": 78.23,
+    "height_mm": 135.38,
     "dpi": 300,
     "margins_mm": {
-      "top": 1.5,
-      "right": 1.5,
-      "bottom": 1.5,
-      "left": 1.5
+      "top": 2.5,
+      "right": 2.5,
+      "bottom": 2.5,
+      "left": 2.5
     },
     "barcode": {
       "narrow_bar_mm": 0.25,
@@ -47,6 +47,10 @@
       "sku": {
         "name": "arial.ttf",
         "size_pt": 10
+      },
+      "barcode_text": {
+        "name": "arialbd.ttf",
+        "size_pt": 16
       }
     }
   }
