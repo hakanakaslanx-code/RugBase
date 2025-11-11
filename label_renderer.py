@@ -72,6 +72,10 @@ from settings import DymoLabelSettings, FontSpec, load_settings
 INCH_TO_MM = 25.4
 POINTS_PER_INCH = 72
 
+# Fixed canvas dimensions for Dymo 30321 Large Address Label at 300 DPI.
+CANVAS_WIDTH_PX = 1599
+CANVAS_HEIGHT_PX = 924
+
 
 @dataclass
 class RenderResult:
@@ -271,12 +275,9 @@ class DymoLabelRenderer:
         return self._pdf_dimensions
 
     def _canvas_size(self) -> Tuple[int, int]:
-        pdf_dims = self._load_pdf_dimensions()
-        width_mm = pdf_dims[0] if pdf_dims else self.settings.width_mm
-        height_mm = pdf_dims[1] if pdf_dims else self.settings.height_mm
-        width_px = self._mm_to_px(width_mm)
-        height_px = self._mm_to_px(height_mm)
-        return width_px, height_px
+        """Return the fixed canvas dimensions for the label renderer."""
+
+        return CANVAS_WIDTH_PX, CANVAS_HEIGHT_PX
 
     # endregion
 
@@ -339,6 +340,7 @@ class DymoLabelRenderer:
 
         width_px, height_px = self._canvas_size()
         image = Image.new("L", (width_px, height_px), color=255)
+        image.info["dpi"] = (self.settings.dpi, self.settings.dpi)
         draw = ImageDraw.Draw(image)
         warnings: List[str] = []
 
@@ -358,6 +360,20 @@ class DymoLabelRenderer:
         barcode_height_px = self._mm_to_px(barcode_spec.height_mm)
         barcode = Barcode39(narrow_bar_px, wide_bar_px)
 
+        text_padding_px = self._mm_to_px(layout_spec.section_gap_mm) // 2
+
+        sku_value = self._sku_value(item)
+        sku_font: Any = ImageFont.load_default()
+        sku_text: Optional[str] = None
+        sku_text_height = 0
+        if sku_value:
+            sku_spec = self.settings.fonts.get("sku")
+            sku_font, warn = self._load_font(sku_spec) if sku_spec else (ImageFont.load_default(), None)
+            if warn:
+                warnings.append(warn)
+            sku_text = f"SKU {sku_value}"
+            _, sku_text_height = measure_text(draw, sku_text, sku_font)
+
         rug_no = (item.get("rug_no") or "").strip().upper()
         if not rug_no:
             warnings.append("Rug # is empty. Barcode generation was skipped.")
@@ -365,14 +381,19 @@ class DymoLabelRenderer:
             encoded = f"*{rug_no}*"
             widths = barcode.encode(encoded)
             pattern_width = Barcode39.measure(widths)
-            available = max(content_width - (quiet_zone_px * 2), pattern_width)
-            offset = max(0, (available - pattern_width) // 2)
-            start_x = margin_left + quiet_zone_px + offset
+            total_barcode_width = pattern_width + quiet_zone_px * 2
+            extra_space = max(0, content_width - total_barcode_width)
+            start_x = margin_left + (extra_space // 2) + quiet_zone_px
             start_y = margin_top
             barcode.draw(draw, (start_x, start_y), barcode_height_px, widths)
 
         gap_after_barcode = barcode_height_px + self._mm_to_px(barcode_spec.text_gap_mm)
-        current_y = margin_top + gap_after_barcode
+        reserved_for_sku = sku_text_height + (text_padding_px if sku_value else 0)
+        text_area_top = margin_top + gap_after_barcode + text_padding_px
+        text_area_bottom_limit = height_px - margin_bottom - text_padding_px - reserved_for_sku
+        if text_area_bottom_limit < text_area_top:
+            text_area_bottom_limit = text_area_top
+        current_y = text_area_top
 
         collection_spec = self.settings.fonts.get("collection")
         if collection_spec:
@@ -453,15 +474,12 @@ class DymoLabelRenderer:
             draw.text((margin_left + (content_width - tw) / 2, current_y), line, fill=0, font=font)
             current_y += th + self._mm_to_px(layout_spec.field_gap_mm)
 
-        sku_value = self._sku_value(item)
-        if sku_value:
-            sku_spec = self.settings.fonts.get("sku")
-            sku_font, warn = self._load_font(sku_spec) if sku_spec else (ImageFont.load_default(), None)
-            if warn:
-                warnings.append(warn)
-            _, text_height = measure_text(draw, sku_value, sku_font)
-            y_position = height_px - margin_bottom - text_height
-            draw.text((margin_left, y_position), f"SKU {sku_value}", fill=0, font=sku_font)
+        text_block_bottom = min(current_y, text_area_bottom_limit)
+
+        if sku_text:
+            base_position = height_px - margin_bottom - text_padding_px - sku_text_height
+            y_position = max(text_block_bottom + text_padding_px, base_position)
+            draw.text((margin_left, y_position), sku_text, fill=0, font=sku_font)
 
         return RenderResult(image=image, warnings=warnings)
 
