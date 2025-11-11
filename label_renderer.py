@@ -581,20 +581,40 @@ class DymoLabelRenderer:
             else:
                 content_value = type_value
         shape_value = (item.get("shape") or "").strip()
+        standard_size = (item.get("st_size") or "").strip()
+        actual_size = (item.get("a_size") or "").strip()
         rows: List[Tuple[str, str]] = []
-        mapping = [
-            ("Design", item.get("design")),
-            ("Color", color_value),
-            ("Size", item.get("st_size") or item.get("a_size")),
-            ("Origin", item.get("origin")),
-            ("Style", style),
-            ("Content", content_value),
-            ("Type", shape_value),
-        ]
-        for label, value in mapping:
-            text = (value or "").strip()
-            if text:
-                rows.append((label, text))
+        design_value = (item.get("design") or "").strip()
+        if design_value:
+            rows.append(("Design", design_value))
+
+        has_color_detail = False
+        if ground:
+            rows.append(("Ground", ground))
+            has_color_detail = True
+        if border:
+            rows.append(("Border", border))
+            has_color_detail = True
+        if not has_color_detail and color_value:
+            rows.append(("Color", color_value))
+
+        if standard_size:
+            rows.append(("Std Size", standard_size))
+        if actual_size:
+            rows.append(("Actual Size", actual_size))
+
+        origin_value = (item.get("origin") or "").strip()
+        if origin_value:
+            rows.append(("Origin", origin_value))
+
+        if style:
+            rows.append(("Style", style))
+
+        if content_value:
+            rows.append(("Content", content_value))
+
+        if shape_value:
+            rows.append(("Type", shape_value))
         return rows
 
     def _format_price_lines(self, item: Dict[str, object]) -> List[str]:
@@ -636,7 +656,7 @@ class DymoLabelRenderer:
 
         narrow_bar_px = self._mm_to_px(barcode_spec.narrow_bar_mm)
         module_px = max(1, narrow_bar_px)
-        quiet_zone_px = self._mm_to_px(barcode_spec.quiet_zone_mm)
+        quiet_zone_px = max(self._mm_to_px(barcode_spec.quiet_zone_mm), module_px * 10)
         barcode_height_px = self._mm_to_px(barcode_spec.height_mm)
         barcode = Code128(module_px)
 
