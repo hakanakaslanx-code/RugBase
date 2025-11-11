@@ -25,6 +25,18 @@ def _missing_runtime_dependencies() -> list[str]:
     return missing
 
 
+def _google_imports_available() -> bool:
+    command = [
+        sys.executable,
+        "-c",
+        "import googleapiclient.discovery; import google.oauth2.service_account",
+    ]
+    result = subprocess.run(command)
+    if result.returncode != 0:
+        return False
+    return True
+
+
 def _install_requirements(project_dir: pathlib.Path) -> None:
     requirements = project_dir / "requirements.txt"
     if not requirements.exists():  # pragma: no cover - defensive guard
@@ -38,7 +50,12 @@ def _install_requirements(project_dir: pathlib.Path) -> None:
 
 
 def _prepare_runtime_dependencies(project_dir: pathlib.Path) -> None:
-    if not _missing_runtime_dependencies():
+    def _runtime_ready() -> bool:
+        if not _google_imports_available():
+            return False
+        return not _missing_runtime_dependencies()
+
+    if _runtime_ready():
         return
 
     try:
@@ -48,9 +65,9 @@ def _prepare_runtime_dependencies(project_dir: pathlib.Path) -> None:
             "Required runtime dependencies could not be installed automatically. Run 'pip install -r requirements.txt' manually."
         ) from exc
 
-    if _missing_runtime_dependencies():
+    if not _runtime_ready():
         raise SystemExit(
-            "Required runtime dependencies could not be imported. Install the missing libraries before packaging again."
+            "Google dependencies could not be imported. Install the missing libraries before packaging again."
         )
 
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 import math
 import os
 import re
+import subprocess
+import sys
 import tempfile
+import zlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -11,8 +14,8 @@ Image = None  # type: ignore[assignment]
 ImageDraw = None  # type: ignore[assignment]
 ImageFont = None  # type: ignore[assignment]
 PIL_IMPORT_MESSAGE = (
-    "Pillow (PIL) is required for label generation. Include the package during"
-    " installation or run 'pip install Pillow' in the development environment."
+    "Pillow (PIL) gerekli. Etiket önizleme ve yazdırma özellikleri için"
+    " kurulum yapın ve ardından uygulamayı yeniden başlatın."
 )
 
 
@@ -47,22 +50,71 @@ def ensure_pillow() -> bool:
         return True
 
     PIL_IMPORT_MESSAGE = (
-        "Pillow (PIL) was not found. Rebuild the application package"
-        " or run 'pip install Pillow' while developing."
+        "Pillow (PIL) gerekli. 'Pillow Kur' seçeneğini kullanarak kurulumu"
+        " tamamlayın ve işlem sonrası uygulamayı yeniden başlatın."
     )
     return False
+
+
+def install_pillow() -> Tuple[bool, str]:
+    """Attempt to install Pillow via pip and return the outcome."""
+
+    command = [sys.executable, "-m", "pip", "install", "Pillow"]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    except Exception as exc:  # pragma: no cover - subprocess availability
+        return False, str(exc)
+    output_parts = [part.strip() for part in (completed.stdout, completed.stderr) if part.strip()]
+    details = "\n".join(output_parts)
+    if completed.returncode == 0:
+        ensure_pillow()
+        return True, details
+    return False, details
 
 
 def measure_text(draw: "ImageDraw.ImageDraw", text: str, font: Any) -> Tuple[int, int]:
     """Measure text dimensions with compatibility across Pillow versions."""
 
+    if not text:
+        return 0, 0
     try:
         bbox = draw.textbbox((0, 0), text, font=font)
     except AttributeError:
-        width, height = font.getsize(text)
-    else:
+        bbox = None
+    if bbox:
         width = bbox[2] - bbox[0]
         height = bbox[3] - bbox[1]
+        return int(width), int(height)
+
+    width = 0
+    if hasattr(draw, "textlength"):
+        try:
+            width = int(math.ceil(draw.textlength(text, font=font)))
+        except TypeError:
+            width = 0
+    if not width and hasattr(font, "getlength"):
+        try:
+            width = int(math.ceil(font.getlength(text)))
+        except TypeError:
+            width = 0
+
+    height = 0
+    if hasattr(font, "getbbox"):
+        bbox = font.getbbox(text)
+        width = max(width, int(bbox[2] - bbox[0]))
+        height = int(bbox[3] - bbox[1])
+    else:
+        mask = font.getmask(text)
+        mask_width, mask_height = mask.size
+        width = max(width, int(mask_width))
+        height = int(mask_height)
+
+    if not width and text:
+        width = len(text)
+    if height <= 0 and hasattr(font, "getmetrics"):
+        ascent, descent = font.getmetrics()
+        height = int(ascent + descent)
+    height = max(height, 1)
     return int(width), int(height)
 
 
@@ -73,8 +125,8 @@ INCH_TO_MM = 25.4
 POINTS_PER_INCH = 72
 
 # Fixed canvas dimensions for Dymo 30321 Large Address Label at 300 DPI.
-CANVAS_WIDTH_PX = 1599
-CANVAS_HEIGHT_PX = 924
+CANVAS_WIDTH_PX = 924
+CANVAS_HEIGHT_PX = 1599
 
 
 @dataclass
@@ -83,74 +135,152 @@ class RenderResult:
     warnings: List[str]
 
 
-class Barcode39:
-    _PATTERNS: Dict[str, str] = {
-        "0": "nnnwwnwnn",
-        "1": "wnnwnnnnw",
-        "2": "nnwwnnnnw",
-        "3": "wnwwnnnnn",
-        "4": "nnnwwnnnw",
-        "5": "wnnwwnnnn",
-        "6": "nnwwwnnnn",
-        "7": "nnnwnnwnw",
-        "8": "wnnwnnwnn",
-        "9": "nnwwnnwnn",
-        "A": "wnnnnwnnw",
-        "B": "nnwnnwnnw",
-        "C": "wnwnnwnnn",
-        "D": "nnnnwwnnw",
-        "E": "wnnnwwnnn",
-        "F": "nnwnwwnnn",
-        "G": "nnnnnwwnw",
-        "H": "wnnnnwwnn",
-        "I": "nnwnnwwnn",
-        "J": "nnnnwwwnn",
-        "K": "wnnnnnnww",
-        "L": "nnwnnnnww",
-        "M": "wnwnnnnwn",
-        "N": "nnnnwnnww",
-        "O": "wnnnwnnwn",
-        "P": "nnwnwnnwn",
-        "Q": "nnnnnnwww",
-        "R": "wnnnnnwwn",
-        "S": "nnwnnnwwn",
-        "T": "nnnnwnwwn",
-        "U": "wwnnnnnnw",
-        "V": "nwwnnnnnw",
-        "W": "wwwnnnnnn",
-        "X": "nwnnwnnnw",
-        "Y": "wwnnwnnnn",
-        "Z": "nwwnwnnnn",
-        "-": "nwnnnnwnw",
-        ".": "wwnnnnwnn",
-        " ": "nwwnnnwnn",
-        "$": "nwnwnwnnn",
-        "/": "nwnwnnnwn",
-        "+": "nwnnnwnwn",
-        "%": "nnnwnwnwn",
-        "*": "nwnnwnwnn",
-    }
+class Code128:
+    """Minimal Code128 subset B encoder for alphanumeric rug identifiers."""
 
-    def __init__(self, narrow_bar_px: int, wide_bar_px: int) -> None:
-        self.narrow_bar_px = max(1, narrow_bar_px)
-        self.wide_bar_px = max(self.narrow_bar_px * 2, wide_bar_px)
+    START_B = 104
+    STOP = 106
 
-    def encode(self, data: str) -> List[int]:
-        encoded_widths: List[int] = []
-        for index, char in enumerate(data):
-            pattern = self._PATTERNS.get(char)
-            if not pattern:
-                raise ValueError(f"Unsupported Code39 character: {char}")
-            for pos, symbol in enumerate(pattern):
-                width = self.wide_bar_px if symbol == "w" else self.narrow_bar_px
-                encoded_widths.append(width if pos % 2 == 0 else -width)
-            if index < len(data) - 1:
-                encoded_widths.append(-self.narrow_bar_px)
-        return encoded_widths
+    CODE_PATTERNS: Sequence[str] = (
+        "212222",
+        "222122",
+        "222221",
+        "121223",
+        "121322",
+        "131222",
+        "122213",
+        "122312",
+        "132212",
+        "221213",
+        "221312",
+        "231212",
+        "112232",
+        "122132",
+        "122231",
+        "113222",
+        "123122",
+        "123221",
+        "223211",
+        "221132",
+        "221231",
+        "213212",
+        "223112",
+        "312131",
+        "311222",
+        "321122",
+        "321221",
+        "312212",
+        "322112",
+        "322211",
+        "212123",
+        "212321",
+        "232121",
+        "111323",
+        "131123",
+        "131321",
+        "112313",
+        "132113",
+        "132311",
+        "211313",
+        "231113",
+        "231311",
+        "112133",
+        "112331",
+        "132131",
+        "113123",
+        "113321",
+        "133121",
+        "313121",
+        "211331",
+        "231131",
+        "213113",
+        "213311",
+        "213131",
+        "311123",
+        "311321",
+        "331121",
+        "312113",
+        "312311",
+        "332111",
+        "314111",
+        "221411",
+        "431111",
+        "111224",
+        "111422",
+        "121124",
+        "121421",
+        "141122",
+        "141221",
+        "112214",
+        "112412",
+        "122114",
+        "122411",
+        "142112",
+        "142211",
+        "241211",
+        "221114",
+        "413111",
+        "241112",
+        "134111",
+        "111242",
+        "121142",
+        "121241",
+        "114212",
+        "124112",
+        "124211",
+        "411212",
+        "421112",
+        "421211",
+        "212141",
+        "214121",
+        "412121",
+        "111143",
+        "111341",
+        "131141",
+        "114113",
+        "114311",
+        "411113",
+        "411311",
+        "113141",
+        "114131",
+        "311141",
+        "411131",
+        "211412",
+        "211214",
+        "211232",
+        "2331112",
+    )
+
+    CODE_TO_CHAR_B: Dict[int, str] = {index: chr(index + 32) for index in range(95)}
+    CHAR_TO_CODE_B: Dict[str, int] = {value: key for key, value in CODE_TO_CHAR_B.items()}
+
+    def __init__(self, module_px: int) -> None:
+        self.module_px = max(1, module_px)
 
     @staticmethod
     def measure(widths: Sequence[int]) -> int:
         return sum(abs(value) for value in widths)
+
+    def encode(self, data: str) -> List[int]:
+        if not data:
+            raise ValueError("Code128 requires at least one character.")
+        codes: List[int] = [self.START_B]
+        for char in data:
+            code = self.CHAR_TO_CODE_B.get(char)
+            if code is None:
+                raise ValueError(f"Unsupported Code128 character: {char!r}")
+            codes.append(code)
+        checksum = (codes[0] + sum((index * value) for index, value in enumerate(codes[1:], start=1))) % 103
+        codes.append(checksum)
+        codes.append(self.STOP)
+        widths: List[int] = []
+        for code in codes:
+            pattern = self.CODE_PATTERNS[code]
+            modules = [int(ch) for ch in pattern]
+            for position, module_width in enumerate(modules):
+                pixels = module_width * self.module_px
+                widths.append(pixels if position % 2 == 0 else -pixels)
+        return widths
 
     def draw(
         self,
@@ -165,6 +295,127 @@ class Barcode39:
                 draw.rectangle([x, y, x + width - 1, y + height], fill=0)
             x += abs(width)
         return top_left[0], x
+
+
+def _format_pdf_number(value: float) -> str:
+    text = f"{value:.4f}"
+    text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _px_to_points(pixels: int, dpi: int) -> float:
+    return pixels / float(dpi) * POINTS_PER_INCH
+
+
+def _encode_pdf_page(image: "Image.Image", dpi: int) -> Tuple[Dict[str, Any], bytes]:
+    mode = image.mode
+    if mode not in {"L", "RGB"}:
+        image = image.convert("L")
+        mode = image.mode
+    width_px, height_px = image.size
+    raw = image.tobytes()
+    compressed = zlib.compress(raw)
+    resources: Dict[str, Any] = {
+        "width_px": width_px,
+        "height_px": height_px,
+        "mode": mode,
+        "width_pt": _px_to_points(width_px, dpi),
+        "height_pt": _px_to_points(height_px, dpi),
+    }
+    return resources, compressed
+
+
+def _write_pdf(images: Sequence["Image.Image"], dpi: int, path: str) -> None:
+    if not images:
+        raise ValueError("No images were provided for PDF export.")
+
+    buffer = bytearray()
+    offsets: List[int] = []
+
+    def add_object(index: int, content: bytes) -> None:
+        offsets.append(len(buffer))
+        buffer.extend(f"{index} 0 obj\n".encode("ascii"))
+        buffer.extend(content)
+        if not content.endswith(b"\n"):
+            buffer.extend(b"\n")
+        buffer.extend(b"endobj\n")
+
+    buffer.extend(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n")
+
+    page_entries: List[int] = []
+    object_index = 3
+
+    page_objects: List[Tuple[int, int, int]] = []
+    resource_payloads: List[Tuple[Dict[str, Any], bytes, str]] = []
+
+    for page_number, image in enumerate(images, start=1):
+        resources, payload = _encode_pdf_page(image, dpi)
+        image_object = object_index
+        content_object = object_index + 1
+        page_object = object_index + 2
+        object_index += 3
+        name = f"Im{page_number}"
+        resource_payloads.append((resources, payload, name))
+        page_objects.append((image_object, content_object, page_object))
+        page_entries.append(page_object)
+
+    add_object(
+        1,
+        (
+            b"<< /Type /Catalog /Pages 2 0 R /ViewerPreferences "
+            b"<< /PrintScaling /None /PickTrayByPDFSize true /AutoRotate false >> >>\n"
+        ),
+    )
+
+    kids = " ".join(f"{entry} 0 R" for entry in page_entries)
+    add_object(2, f"<< /Type /Pages /Count {len(page_entries)} /Kids [{kids}] >>\n".encode("ascii"))
+
+    for (image_object, content_object, page_object), (resources, payload, name) in zip(page_objects, resource_payloads):
+        width_px = resources["width_px"]
+        height_px = resources["height_px"]
+        width_pt = resources["width_pt"]
+        height_pt = resources["height_pt"]
+        mode = resources["mode"]
+        procset = "/ImageB" if mode == "L" else "/ImageC"
+        colorspace = "/DeviceGray" if mode == "L" else "/DeviceRGB"
+
+        image_dict = (
+            f"<< /Type /XObject /Subtype /Image /Width {width_px} /Height {height_px} "
+            f"/ColorSpace {colorspace} /BitsPerComponent 8 /Filter /FlateDecode /Length {len(payload)} >>\n".encode(
+                "ascii"
+            )
+        )
+        add_object(image_object, image_dict + b"stream\n" + payload + b"\nendstream\n")
+
+        content_stream = (
+            f"q {_format_pdf_number(width_pt)} 0 0 {_format_pdf_number(height_pt)} 0 0 cm /{name} Do Q\n".encode(
+                "ascii"
+            )
+        )
+        add_object(content_object, f"<< /Length {len(content_stream)} >>\n".encode("ascii") + b"stream\n" + content_stream + b"endstream\n")
+
+        media_box = (
+            f"[0 0 {_format_pdf_number(width_pt)} {_format_pdf_number(height_pt)}]"
+        )
+        page_dict = (
+            "<< /Type /Page /Parent 2 0 R "
+            f"/MediaBox {media_box} /CropBox {media_box} /Rotate 0 "
+            f"/Resources << /ProcSet [/PDF {procset}] /XObject << /{name} {image_object} 0 R >> >> "
+            f"/Contents {content_object} 0 R >>\n"
+        ).encode("ascii")
+        add_object(page_object, page_dict)
+
+    xref_position = len(buffer)
+    total_objects = object_index - 1
+    buffer.extend(f"xref\n0 {total_objects + 1}\n".encode("ascii"))
+    buffer.extend(b"0000000000 65535 f \n")
+    for offset in offsets:
+        buffer.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    buffer.extend(f"trailer\n<< /Size {total_objects + 1} /Root 1 0 R >>\n".encode("ascii"))
+    buffer.extend(f"startxref\n{xref_position}\n%%EOF\n".encode("ascii"))
+
+    with open(path, "wb") as handle:
+        handle.write(buffer)
 
 
 class DymoLabelRenderer:
@@ -281,6 +532,36 @@ class DymoLabelRenderer:
 
     # endregion
 
+    def _normalize_output_image(self, image: Any, warnings: List[str]) -> Any:
+        if not PIL_AVAILABLE:
+            return image
+        expected_width, expected_height = self._canvas_size()
+        width, height = image.size
+        dpi = image.info.get("dpi", (self.settings.dpi, self.settings.dpi))
+        expected_width_in = self.settings.width_mm / INCH_TO_MM
+        expected_height_in = self.settings.height_mm / INCH_TO_MM
+        expected_text = f"{expected_width_in:.2f}\" × {expected_height_in:.2f}\""
+        if (width, height) == (expected_width, expected_height):
+            return image
+        if (width, height) == (expected_height, expected_width) or width > height:
+            rotated = image.rotate(90, expand=True)
+            rotated.info["dpi"] = dpi
+            warnings.append(
+                "Label orientation corrected to portrait before output."
+            )
+            width, height = rotated.size
+            if (width, height) != (expected_width, expected_height):
+                warnings.append(
+                    f"Label size adjusted for portrait printing. Expected {expected_width}×{expected_height}px"
+                    f" (~{expected_text})."
+                )
+            return rotated
+        warnings.append(
+            "Label dimensions differed from the expected portrait layout. Output may not align with the printer"
+            f" (expected {expected_width}×{expected_height}px ≈ {expected_text})."
+        )
+        return image
+
     def _compose_field_rows(self, item: Dict[str, object]) -> List[Tuple[str, str]]:
         ground = (item.get("ground") or "").strip()
         border = (item.get("border") or "").strip()
@@ -309,7 +590,6 @@ class DymoLabelRenderer:
             ("Style", style),
             ("Content", content_value),
             ("Type", shape_value),
-            ("Rug #", item.get("rug_no")),
         ]
         for label, value in mapping:
             text = (value or "").strip()
@@ -355,12 +635,13 @@ class DymoLabelRenderer:
         layout_spec = self.settings.layout
 
         narrow_bar_px = self._mm_to_px(barcode_spec.narrow_bar_mm)
-        wide_bar_px = self._mm_to_px(barcode_spec.wide_bar_mm)
+        module_px = max(1, narrow_bar_px)
         quiet_zone_px = self._mm_to_px(barcode_spec.quiet_zone_mm)
         barcode_height_px = self._mm_to_px(barcode_spec.height_mm)
-        barcode = Barcode39(narrow_bar_px, wide_bar_px)
+        barcode = Code128(module_px)
 
-        text_padding_px = self._mm_to_px(layout_spec.section_gap_mm) // 2
+        text_padding_px = max(1, self._mm_to_px(layout_spec.section_gap_mm) // 2)
+        barcode_text_gap_px = self._mm_to_px(barcode_spec.text_gap_mm)
 
         sku_value = self._sku_value(item)
         sku_font: Any = ImageFont.load_default()
@@ -375,25 +656,63 @@ class DymoLabelRenderer:
             _, sku_text_height = measure_text(draw, sku_text, sku_font)
 
         rug_no = (item.get("rug_no") or "").strip().upper()
+        barcode_text: Optional[str] = None
         if not rug_no:
             warnings.append("Rug # is empty. Barcode generation was skipped.")
         else:
-            encoded = f"*{rug_no}*"
-            widths = barcode.encode(encoded)
-            pattern_width = Barcode39.measure(widths)
-            total_barcode_width = pattern_width + quiet_zone_px * 2
-            extra_space = max(0, content_width - total_barcode_width)
-            start_x = margin_left + (extra_space // 2) + quiet_zone_px
-            start_y = margin_top
-            barcode.draw(draw, (start_x, start_y), barcode_height_px, widths)
+            try:
+                widths = barcode.encode(rug_no)
+            except ValueError as exc:
+                warnings.append(f"Barcode could not be created: {exc}")
+            else:
+                barcode_text = f"Rug # {rug_no}"
+                pattern_width = Code128.measure(widths)
+                total_barcode_width = pattern_width + quiet_zone_px * 2
+                extra_space = max(0, content_width - total_barcode_width)
+                start_x = margin_left + (extra_space // 2) + quiet_zone_px
+                start_y = margin_top
+                barcode.draw(draw, (start_x, start_y), barcode_height_px, widths)
 
-        gap_after_barcode = barcode_height_px + self._mm_to_px(barcode_spec.text_gap_mm)
         reserved_for_sku = sku_text_height + (text_padding_px if sku_value else 0)
-        text_area_top = margin_top + gap_after_barcode + text_padding_px
         text_area_bottom_limit = height_px - margin_bottom - text_padding_px - reserved_for_sku
-        if text_area_bottom_limit < text_area_top:
-            text_area_bottom_limit = text_area_top
-        current_y = text_area_top
+        current_y = margin_top + barcode_height_px
+        barcode_label_y = current_y + barcode_text_gap_px
+
+        field_rows = self._compose_field_rows(item)
+        label_font_spec = self.settings.fonts.get("field_label")
+        value_font_spec = self.settings.fonts.get("field_value")
+        label_font, warn = self._load_font(label_font_spec) if label_font_spec else (ImageFont.load_default(), None)
+        if warn:
+            warnings.append(warn)
+        value_font, warn = self._load_font(value_font_spec) if value_font_spec else (ImageFont.load_default(), None)
+        if warn:
+            warnings.append(warn)
+
+        barcode_font_spec = self.settings.fonts.get("barcode_text")
+        if barcode_font_spec:
+            barcode_font, warn = self._load_font(barcode_font_spec)
+            if warn:
+                warnings.append(warn)
+        else:
+            barcode_font = value_font
+
+        if barcode_text:
+            barcode_text_width, barcode_text_height = measure_text(draw, barcode_text, barcode_font)
+            draw.text(
+                (
+                    margin_left + (content_width - barcode_text_width) / 2,
+                    barcode_label_y,
+                ),
+                barcode_text,
+                fill=0,
+                font=barcode_font,
+            )
+            current_y = barcode_label_y + barcode_text_height + text_padding_px
+        else:
+            current_y = barcode_label_y + text_padding_px
+
+        if text_area_bottom_limit < current_y:
+            text_area_bottom_limit = current_y
 
         collection_spec = self.settings.fonts.get("collection")
         if collection_spec:
@@ -417,15 +736,8 @@ class DymoLabelRenderer:
             )
             current_y += text_height + self._mm_to_px(layout_spec.collection_gap_mm)
 
-        field_rows = self._compose_field_rows(item)
-        label_font_spec = self.settings.fonts.get("field_label")
-        value_font_spec = self.settings.fonts.get("field_value")
-        label_font, warn = self._load_font(label_font_spec) if label_font_spec else (ImageFont.load_default(), None)
-        if warn:
-            warnings.append(warn)
-        value_font, warn = self._load_font(value_font_spec) if value_font_spec else (ImageFont.load_default(), None)
-        if warn:
-            warnings.append(warn)
+        if text_area_bottom_limit < current_y:
+            text_area_bottom_limit = current_y
 
         column_spacing = self._mm_to_px(layout_spec.column_spacing_mm)
         max_label_width = 0
@@ -503,19 +815,20 @@ class DymoLabelRenderer:
         pages: List[Any] = []
         for item in items:
             result = self.render(item)
-            pages.append(result.image)
+            normalized = self._normalize_output_image(result.image, warnings)
+            pages.append(normalized)
             warnings.extend(result.warnings)
         if not pages:
             raise ValueError("No labels were available to export to PDF.")
-        first, *rest = pages
-        first.save(path, "PDF", resolution=self.settings.dpi, save_all=bool(rest), append_images=rest)
+        _write_pdf(pages, self.settings.dpi, path)
         return warnings
 
     def export_png(self, item: Dict[str, object], path: str) -> List[str]:
         if not PIL_AVAILABLE:
             raise RuntimeError(PIL_IMPORT_MESSAGE)
         result = self.render(item)
-        result.image.save(path, "PNG", dpi=(self.settings.dpi, self.settings.dpi))
+        normalized = self._normalize_output_image(result.image, result.warnings)
+        normalized.save(path, "PNG", dpi=(self.settings.dpi, self.settings.dpi))
         return result.warnings
 
     def print_to_default(self, item: Dict[str, object]) -> List[str]:
@@ -523,12 +836,13 @@ class DymoLabelRenderer:
             raise RuntimeError(PIL_IMPORT_MESSAGE)
         result = self.render(item)
         warnings = list(result.warnings)
+        normalized = self._normalize_output_image(result.image, warnings)
         if os.name != "nt":
             warnings.append("Direct printing is only supported on Windows.")
             return warnings
         temp_dir = tempfile.gettempdir()
         temp_path = os.path.join(temp_dir, "dymo_label.png")
-        result.image.save(temp_path, "PNG", dpi=(self.settings.dpi, self.settings.dpi))
+        normalized.save(temp_path, "PNG", dpi=(self.settings.dpi, self.settings.dpi))
         try:
             os.startfile(temp_path, "print")  # type: ignore[attr-defined]
         except OSError as exc:
@@ -542,5 +856,6 @@ __all__ = [
     "PIL_AVAILABLE",
     "PIL_IMPORT_MESSAGE",
     "ensure_pillow",
+    "install_pillow",
     "measure_text",
 ]
