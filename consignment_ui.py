@@ -128,7 +128,8 @@ class ConsignmentModal:
         self._existing_map.clear()
         display_values: List[str] = []
         for consignment in self._consignments:
-            display = f"{consignment['consignment_ref']} - {consignment['partner_name']}"
+            partner = consignment.get("customer_full_name") or consignment.get("partner_name")
+            display = f"{consignment['consignment_ref']} - {partner}"
             display_values.append(display)
             self._existing_map[display] = consignment["id"]
         self.existing_combo.configure(values=display_values)
@@ -182,7 +183,8 @@ class ConsignmentModal:
                     self.active_consignment = consignment
                     self.refresh_consignments()
                     self.refresh_partner_names()
-                    display = f"{consignment['consignment_ref']} - {consignment['partner_name']}"
+                    partner = consignment.get("customer_full_name") or consignment.get("partner_name")
+                    display = f"{consignment['consignment_ref']} - {partner}"
                     self.existing_var.set(display)
                     self.status_var.set(
                         f"Created consignment: {consignment['consignment_ref']}"
@@ -299,12 +301,51 @@ class ConsignmentDetailWindow:
         container = ttk.Frame(self.window, padding=10)
         container.pack(fill=tk.BOTH, expand=True)
 
-        info = (
-            f"Ref: {self.consignment['consignment_ref']}\n"
-            f"Partner: {self.consignment['partner_name']}\n"
-            f"Status: {self.consignment['status']}"
+        summary_frame = ttk.LabelFrame(container, text="Summary", padding=10)
+        summary_frame.pack(fill=tk.X, pady=(0, 10))
+        summary_frame.columnconfigure(1, weight=1)
+
+        def add_row(row: int, label: str, value: Optional[str]) -> int:
+            if not value:
+                return row
+            ttk.Label(summary_frame, text=f"{label}:").grid(
+                row=row, column=0, sticky=tk.W, padx=(0, 8), pady=2
+            )
+            ttk.Label(summary_frame, text=value, wraplength=520).grid(
+                row=row, column=1, sticky=tk.W, pady=2
+            )
+            return row + 1
+
+        row_index = 0
+        row_index = add_row(row_index, "Ref", self.consignment.get("consignment_ref"))
+        row_index = add_row(row_index, "Status", self.consignment.get("status"))
+        company = (
+            self.consignment.get("customer_full_name")
+            or self.consignment.get("partner_name")
         )
-        ttk.Label(container, text=info, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 10))
+        row_index = add_row(row_index, "Company", company)
+        row_index = add_row(
+            row_index, "Contact", self.consignment.get("partner_contact")
+        )
+        row_index = add_row(row_index, "Phone", self.consignment.get("customer_phone"))
+        row_index = add_row(row_index, "Email", self.consignment.get("customer_email"))
+
+        address_parts = [
+            self.consignment.get("customer_address") or "",
+            ", ".join(
+                part
+                for part in (
+                    self.consignment.get("customer_city") or "",
+                    self.consignment.get("customer_state") or "",
+                    self.consignment.get("customer_zip") or "",
+                )
+                if part
+            ),
+        ]
+        address = "\n".join([part for part in address_parts if part])
+        row_index = add_row(row_index, "Address", address)
+
+        row_index = add_row(row_index, "Notes", self.consignment.get("customer_notes"))
 
         columns = ("rug_no", "state", "scanned_at", "collection", "design", "brand_name")
         self.tree = ttk.Treeview(container, columns=columns, show="headings", height=15)
@@ -394,7 +435,7 @@ class ConsignmentListWindow:
         self.master = master
         self.window = tk.Toplevel(master)
         self.window.title("Consignment List")
-        self.window.geometry("750x500")
+        self.window.geometry("1000x520")
         self.window.transient(master)
         self.window.grab_set()
         self._consignments: List[Dict[str, Any]] = []
@@ -408,7 +449,10 @@ class ConsignmentListWindow:
 
         columns = (
             "consignment_ref",
-            "partner_name",
+            "customer_full_name",
+            "partner_contact",
+            "customer_phone",
+            "customer_email",
             "created_at",
             "status",
             "total_out",
@@ -417,7 +461,10 @@ class ConsignmentListWindow:
         self.tree = ttk.Treeview(container, columns=columns, show="headings", height=18)
         headers = {
             "consignment_ref": "Ref",
-            "partner_name": "Partner",
+            "customer_full_name": "Company",
+            "partner_contact": "Contact",
+            "customer_phone": "Phone",
+            "customer_email": "Email",
             "created_at": "Date",
             "status": "Status",
             "total_out": "Checked Out",
@@ -425,10 +472,13 @@ class ConsignmentListWindow:
         }
         widths = {
             "consignment_ref": 120,
-            "partner_name": 160,
+            "customer_full_name": 200,
+            "partner_contact": 160,
+            "customer_phone": 140,
+            "customer_email": 200,
             "created_at": 140,
             "status": 100,
-            "total_out": 80,
+            "total_out": 90,
             "total_returned": 90,
         }
         for key, label in headers.items():
@@ -454,11 +504,15 @@ class ConsignmentListWindow:
                 iid=str(consignment["id"]),
                 values=(
                     consignment.get("consignment_ref"),
-                    consignment.get("partner_name"),
+                    consignment.get("customer_full_name")
+                    or consignment.get("partner_name"),
+                    consignment.get("partner_contact") or "",
+                    consignment.get("customer_phone") or "",
+                    consignment.get("customer_email") or "",
                     consignment.get("created_at"),
                     consignment.get("status"),
-                    consignment.get("total_out"),
-                    consignment.get("total_returned"),
+                    consignment.get("total_out") or 0,
+                    consignment.get("total_returned") or 0,
                 ),
             )
 
@@ -477,8 +531,10 @@ class ConsignmentListWindow:
             writer = csv.writer(csvfile)
             writer.writerow([
                 "consignment_ref",
-                "partner_name",
+                "company_name",
                 "partner_contact",
+                "customer_phone",
+                "customer_email",
                 "created_at",
                 "status",
                 "notes",
@@ -489,8 +545,11 @@ class ConsignmentListWindow:
                 writer.writerow(
                     [
                         consignment.get("consignment_ref"),
-                        consignment.get("partner_name"),
+                        consignment.get("customer_full_name")
+                        or consignment.get("partner_name"),
                         consignment.get("partner_contact"),
+                        consignment.get("customer_phone"),
+                        consignment.get("customer_email"),
                         consignment.get("created_at"),
                         consignment.get("status"),
                         consignment.get("notes"),
