@@ -1,4 +1,5 @@
 import csv
+import logging
 import os
 import subprocess
 import sys
@@ -6,7 +7,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import db
 from core import app_paths, importer, updater
@@ -17,6 +18,8 @@ from ui_label_generator import LabelGeneratorWindow
 from core.excel import Workbook
 from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
 from ui.sync_panel import SyncPanel
+
+logger = logging.getLogger(__name__)
 
 
 class ScrollableFrame(ttk.Frame):
@@ -63,7 +66,7 @@ class ScrollableFrame(ttk.Frame):
 
 
 class MainWindow:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, column_changes: Optional[List[str]] = None) -> None:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
@@ -75,6 +78,8 @@ class MainWindow:
         self.customer_tree: Optional[ttk.Treeview] = None
         self.customer_records: Dict[int, Dict[str, Any]] = {}
         self.sales_period_days: Optional[int] = 30
+        self.column_status_var = tk.StringVar(value="")
+        self._startup_column_changes = list(column_changes or [])
         self._configure_style()
         self._create_widgets()
         self.load_items()
@@ -83,6 +88,7 @@ class MainWindow:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.minsize(1024, 640)
         self._apply_theme()
+        self._maybe_show_startup_column_changes()
 
     def _configure_style(self) -> None:
         try:
@@ -264,6 +270,22 @@ class MainWindow:
 
         if self.label_window and self.label_window.window.winfo_exists():
             self.label_window.apply_theme(palette)
+
+    def _maybe_show_startup_column_changes(self) -> None:
+        if not self._startup_column_changes:
+            return
+
+        def _notify() -> None:
+            message = self._format_column_check_message(self._startup_column_changes)
+            messagebox.showinfo("Inventory Columns", message)
+            self.column_status_var.set(message)
+
+        self.root.after(200, _notify)
+
+    @staticmethod
+    def _format_column_check_message(columns: Sequence[str]) -> str:
+        formatted = ", ".join(sorted(columns))
+        return f"Yeni sütunlar eklendi: {formatted}"
 
     def _create_widgets(self) -> None:
         self._build_menu()
@@ -497,10 +519,22 @@ class MainWindow:
         self.totals_label = ttk.Label(self.footer_frame, textvariable=self.totals_var)
         self.totals_label.pack(side=tk.LEFT)
 
+        self.column_status_label = ttk.Label(
+            self.footer_frame,
+            textvariable=self.column_status_var,
+            style="Info.TLabel",
+        )
+        self.column_status_label.pack(side=tk.LEFT, padx=(12, 0))
+
+        self.column_check_button = ttk.Button(
+            self.footer_frame, text="Check Columns", command=self.on_check_columns
+        )
+        self.column_check_button.pack(side=tk.RIGHT)
+
         self.update_button = ttk.Button(
             self.footer_frame, text="Check for Updates", command=self.on_check_for_updates
         )
-        self.update_button.pack(side=tk.RIGHT)
+        self.update_button.pack(side=tk.RIGHT, padx=(10, 0))
 
         self.version_label = ttk.Label(self.footer_frame, text=f"Version {__version__}")
         self.version_label.pack(side=tk.RIGHT, padx=(0, 12))
@@ -570,6 +604,26 @@ class MainWindow:
 
     def open_return_modal(self) -> None:
         ReturnModal(self.root, self.current_user)
+
+    def on_check_columns(self) -> None:
+        try:
+            added_columns = db.ensure_inventory_columns()
+        except Exception as exc:  # pragma: no cover - defensive UI handler
+            logger.exception("Column check failed")
+            messagebox.showerror(
+                "Column Check Failed",
+                f"Kolon kontrolü başarısız: {exc}",
+            )
+            self.column_status_var.set("Kolon kontrolü başarısız.")
+            return
+
+        if added_columns:
+            message = self._format_column_check_message(added_columns)
+            messagebox.showinfo("Inventory Columns", message)
+        else:
+            message = "Tüm gerekli sütunlar mevcut."
+            messagebox.showinfo("Inventory Columns", message)
+        self.column_status_var.set(message)
 
     def open_consignment_list(self) -> None:
         ConsignmentListWindow(self.root)
