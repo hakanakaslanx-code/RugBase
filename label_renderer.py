@@ -584,9 +584,11 @@ class DymoLabelRenderer:
             rows.append(("Design", design_value))
 
         if ground or border:
-            ground_text = ground or "-"
-            border_text = border or "-"
-            rows.append(("Ground / Border", f"{ground_text} - {border_text}"))
+            if ground and border:
+                color_value = f"{ground}/{border}"
+            else:
+                color_value = ground or border
+            rows.append(("Ground / Border", color_value))
 
         if actual_size:
             rows.append(("Actual Size", actual_size))

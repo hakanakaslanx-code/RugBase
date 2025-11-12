@@ -223,7 +223,7 @@ class LabelGeneratorWindow:
         )
         self._result_index = {item["item_id"]: item for item in self.results}
         for item in self.results:
-            color = item.get("ground") or item.get("border") or ""
+            color = self._format_color_value(item)
             values = (
                 item.get("rug_no", ""),
                 item.get("collection", ""),
@@ -247,6 +247,16 @@ class LabelGeneratorWindow:
     def _get_selected_items(self) -> List[Dict[str, object]]:
         selected = self.tree.selection()
         return [self._result_index[iid] for iid in selected if iid in self._result_index]
+
+    @staticmethod
+    def _format_color_value(item: Dict[str, object]) -> str:
+        ground = str(item.get("ground") or "").strip()
+        border = str(item.get("border") or "").strip()
+        if ground and border:
+            return f"{ground}/{border}"
+        if ground or border:
+            return ground or border
+        return ""
 
     def on_tree_select(self, _event: tk.Event) -> None:
         self._update_buttons()
