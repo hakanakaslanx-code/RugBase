@@ -565,10 +565,6 @@ class DymoLabelRenderer:
     def _compose_field_rows(self, item: Dict[str, object]) -> List[Tuple[str, str]]:
         ground = (item.get("ground") or "").strip()
         border = (item.get("border") or "").strip()
-        if ground and border and ground.lower() != border.lower():
-            color_value = f"{ground}/{border}"
-        else:
-            color_value = ground or border
         style = (item.get("style") or "").strip()
         content_value = (item.get("content") or "").strip()
         type_value = (item.get("type") or "").strip()
@@ -586,9 +582,6 @@ class DymoLabelRenderer:
         design_value = (item.get("design") or "").strip()
         if design_value:
             rows.append(("Design", design_value))
-
-        if color_value:
-            rows.append(("Color", color_value))
 
         if ground or border:
             ground_text = ground or "-"
