@@ -18,6 +18,7 @@ from ui_label_generator import LabelGeneratorWindow
 from core.excel import Workbook
 from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
 from ui.sync_panel import SyncPanel
+from ttkbootstrap import Style
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,33 @@ class MainWindow:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
-        self.style = ttk.Style(self.root)
+        self.style = Style(master=self.root, theme="flatly")
         self.dark_mode_var = tk.BooleanVar(value=False)
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", self._on_search_change)
+        self.show_sold_var = tk.BooleanVar(value=False)
+        self.sync_state_var = tk.StringVar(value="Synced ✅")
+        self.user_status_var = tk.StringVar()
+        self.last_sync_var = tk.StringVar(value="—")
+        self.summary_var = tk.StringVar(
+            value="Total Items: 0 | Total Area: 0.00 sq ft | Last Sync: —"
+        )
+        self.auto_save_var = tk.BooleanVar(value=False)
+        self.activity_log_entries: List[str] = [
+            "Updated Rug 48605",
+            "Exported CSV",
+            "Printed Label",
+        ]
+        self.activity_log_var = tk.StringVar(value=self._format_activity_log())
+        self.active_view = "dashboard"
+        self.nav_labels: Dict[str, tk.Label] = {}
+        self.tile_buttons: List[Dict[str, Any]] = []
+        self._sidebar_base_color = "#f8f8f8"
+        self._last_loaded_items: List[Dict[str, Any]] = []
+        self._sidebar_hover_color = "#e4e8ef"
+        self._sidebar_active_color = "#0078D7"
+        self._sidebar_fg = "#1f2933"
+        self._sidebar_active_fg = "#ffffff"
         self._palette: dict[str, str] = {}
         self.customer_form_vars: Dict[str, tk.StringVar] = {}
         self.customer_notes_text: Optional[tk.Text] = None
@@ -80,6 +106,7 @@ class MainWindow:
         self.sales_period_days: Optional[int] = 30
         self.column_status_var = tk.StringVar(value="")
         self._startup_column_changes = list(column_changes or [])
+        self._auto_save_job: Optional[str] = None
         self._configure_style()
         self._create_widgets()
         self.load_items()
@@ -89,16 +116,21 @@ class MainWindow:
         self.root.minsize(1024, 640)
         self._apply_theme()
         self._maybe_show_startup_column_changes()
+        self._update_user_status()
 
     def _configure_style(self) -> None:
-        try:
-            self.style.theme_use("clam")
-        except tk.TclError:
-            pass
+        self.root.option_add("*Font", "Segoe UI 10")
+        self.root.option_add("*TButton.Font", "Segoe UI 10")
+        self.root.option_add("*TLabel.Font", "Segoe UI 10")
         self.style.configure("Header.TLabel", font=("Segoe UI", 18, "bold"))
+        self.style.configure("Hero.TLabel", font=("Segoe UI", 24, "bold"))
         self.style.configure("SubHeader.TLabel", font=("Segoe UI", 10))
         self.style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
         self.style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+        self.style.configure("Card.TFrame", relief="flat", borderwidth=0, padding=16)
+        self.style.configure("TileTitle.TLabel", font=("Segoe UI", 14, "bold"), foreground="#ffffff")
+        self.style.configure("TileSubtitle.TLabel", font=("Segoe UI", 10), foreground="#f4f4f4")
+        self.style.configure("InfoBadge.TLabel", font=("Segoe UI", 10, "bold"))
 
     def _light_palette(self) -> dict[str, str]:
         return {
@@ -259,6 +291,25 @@ class MainWindow:
             bordercolor=palette["border"],
         )
 
+        if hasattr(self, "sidebar_frame"):
+            self.sidebar_frame.configure(bg=self._sidebar_base_color)
+            for widget in self.nav_labels.values():
+                widget.configure(bg=self._sidebar_base_color, fg=self._sidebar_fg, font=("Segoe UI", 11))
+            self._update_nav_state()
+
+        for tile_info in getattr(self, "tile_buttons", []):
+            outer = tile_info["outer"]
+            shadow = tile_info["shadow"]
+            tile = tile_info["tile"]
+            base_color = tile_info["color"]
+            title = tile_info["title"]
+            desc = tile_info["description"]
+            outer.configure(bg=palette["background"])
+            shadow.configure(bg=self._lighten_color(base_color, 0.35))
+            tile.configure(bg=base_color)
+            title.configure(bg=base_color)
+            desc.configure(bg=base_color)
+
         if hasattr(self, "dashboard_container"):
             self.dashboard_container._canvas.configure(
                 background=palette["background"],
@@ -279,6 +330,7 @@ class MainWindow:
             message = self._format_column_check_message(self._startup_column_changes)
             messagebox.showinfo("Inventory Columns", message)
             self.column_status_var.set(message)
+        self.log_activity("Column audit complete")
 
         self.root.after(200, _notify)
 
@@ -289,123 +341,411 @@ class MainWindow:
 
     def _create_widgets(self) -> None:
         self._build_menu()
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(1, weight=1)
 
-        self.dashboard_container = ScrollableFrame(self.notebook, padding=12)
-        self.dashboard_frame = self.dashboard_container.content
-        self.dashboard_frame.columnconfigure(0, weight=1)
-        self.notebook.add(self.dashboard_container, text="Dashboard")
+        self.sidebar_canvas = tk.Canvas(self.root, width=220, highlightthickness=0, bd=0)
+        self.sidebar_canvas.grid(row=0, column=0, sticky="ns")
+        self.sidebar_canvas.bind("<Configure>", self._on_sidebar_configure)
 
-        customers_tab = ttk.Frame(self.notebook, padding=12)
-        self.notebook.add(customers_tab, text="Customers")
-        self._build_customers_tab(customers_tab)
-
-        sync_tab = ttk.Frame(self.notebook, padding=12)
-        self.notebook.add(sync_tab, text="Sync")
-        self.sync_panel = SyncPanel(sync_tab)
-        self.sync_panel.pack(fill=tk.BOTH, expand=True)
-
-        header_frame = ttk.Frame(self.dashboard_frame, padding=(10, 10))
-        header_frame.pack(fill=tk.X)
-        ttk.Label(header_frame, text="RugBase Inventory Dashboard", style="Header.TLabel").pack(
-            anchor=tk.W
+        self.sidebar_frame = tk.Frame(self.sidebar_canvas, bd=0, highlightthickness=0)
+        self.sidebar_window = self.sidebar_canvas.create_window(
+            (0, 0), window=self.sidebar_frame, anchor="nw", width=220
         )
-        ttk.Label(
-            header_frame,
-            text=f"Signed in as {self.current_user}",
-            style="SubHeader.TLabel",
-        ).pack(anchor=tk.W, pady=(2, 0))
 
-        self.filter_frame = ttk.LabelFrame(self.dashboard_frame, text="Filters", padding=12)
-        self.filter_frame.pack(fill=tk.X, pady=(5, 10))
+        self._build_sidebar()
 
-        self.rug_no_var = tk.StringVar()
-        self.collection_var = tk.StringVar()
-        self.brand_var = tk.StringVar()
-        self.style_var = tk.StringVar()
+        self.content_container = ttk.Frame(self.root)
+        self.content_container.grid(row=0, column=1, sticky="nsew")
+        self.content_container.grid_rowconfigure(0, weight=1)
+        self.content_container.grid_columnconfigure(0, weight=1)
 
-        fields = [
-            ("Rug No", self.rug_no_var),
-            ("Collection", self.collection_var),
-            ("Brand", self.brand_var),
-            ("Style", self.style_var),
+        self.views: Dict[str, ttk.Frame] = {}
+
+        self.dashboard_frame = ttk.Frame(self.content_container, padding=24)
+        self.dashboard_frame.grid(row=0, column=0, sticky="nsew")
+        self.views["dashboard"] = self.dashboard_frame
+        self._build_dashboard_view(self.dashboard_frame)
+
+        self.customers_frame = ttk.Frame(self.content_container, padding=24)
+        self.customers_frame.grid(row=0, column=0, sticky="nsew")
+        self.views["customers"] = self.customers_frame
+        self._build_customers_view(self.customers_frame)
+
+        self.sync_frame = ttk.Frame(self.content_container, padding=24)
+        self.sync_frame.grid(row=0, column=0, sticky="nsew")
+        self.views["sync"] = self.sync_frame
+        self._build_sync_view(self.sync_frame)
+
+        self.sales_frame = ttk.Frame(self.content_container, padding=24)
+        self.sales_frame.grid(row=0, column=0, sticky="nsew")
+        self.views["sales"] = self.sales_frame
+        self._build_placeholder_view(
+            self.sales_frame,
+            "Sales & Consignments",
+            "Track consignments, mark rugs as sold, and review revenue snapshots.",
+        )
+
+        self.reports_frame = ttk.Frame(self.content_container, padding=24)
+        self.reports_frame.grid(row=0, column=0, sticky="nsew")
+        self.views["reports"] = self.reports_frame
+        self._build_placeholder_view(
+            self.reports_frame,
+            "Reports",
+            "Generate performance insights and export analytics for your collections.",
+        )
+
+        self.settings_frame = ttk.Frame(self.content_container, padding=24)
+        self.settings_frame.grid(row=0, column=0, sticky="nsew")
+        self.views["settings"] = self.settings_frame
+        self._build_placeholder_view(
+            self.settings_frame,
+            "Settings",
+            "Configure RugBase, manage automation, and review system health.",
+        )
+
+        self.show_view("dashboard")
+
+    def _build_sidebar(self) -> None:
+        self.sidebar_frame.configure(bg=self._sidebar_base_color)
+
+        logo = tk.Label(
+            self.sidebar_frame,
+            text="RugBase",
+            font=("Segoe UI", 18, "bold"),
+            bg=self._sidebar_base_color,
+            fg=self._sidebar_fg,
+            anchor="w",
+            padx=24,
+            pady=20,
+        )
+        logo.pack(fill=tk.X)
+
+        ttk.Separator(self.sidebar_frame).pack(fill=tk.X, padx=16, pady=(0, 12))
+
+        nav_items = [
+            ("dashboard", "🏠", "Dashboard"),
+            ("inventory", "📦", "Inventory"),
+            ("customers", "👥", "Customers"),
+            ("sales", "💰", "Sales"),
+            ("reports", "📊", "Reports"),
+            ("settings", "⚙️", "Settings"),
+            ("sync", "🔄", "Sync & Backup"),
         ]
-        for index, (label, variable) in enumerate(fields):
-            base_col = index * 2
-            ttk.Label(self.filter_frame, text=f"{label}:").grid(
-                row=0, column=base_col, padx=(0, 6), pady=4, sticky=tk.W
-            )
-            ttk.Entry(self.filter_frame, textvariable=variable, width=22).grid(
-                row=0, column=base_col + 1, padx=(0, 16), pady=4, sticky=tk.W
-            )
 
-        spacer_col = len(fields) * 2
-        self.filter_frame.columnconfigure(spacer_col, weight=1)
-        self.search_button = ttk.Button(
-            self.filter_frame, text="Search", style="Accent.TButton", command=self.on_search
+        for key, icon, label in nav_items:
+            nav_label = tk.Label(
+                self.sidebar_frame,
+                text=f"{icon}  {label}",
+                font=("Segoe UI", 11),
+                anchor="w",
+                bg=self._sidebar_base_color,
+                fg=self._sidebar_fg,
+                padx=24,
+                pady=10,
+            )
+            nav_label.pack(fill=tk.X, padx=12, pady=2)
+            nav_label.bind(
+                "<Button-1>",
+                lambda _event, view=key: self.show_view("dashboard" if view == "inventory" else view),
+            )
+            nav_label.bind(
+                "<Enter>",
+                lambda _event, widget=nav_label: widget.configure(bg=self._sidebar_hover_color),
+            )
+            nav_label.bind(
+                "<Leave>",
+                lambda _event, view=key, widget=nav_label: self._refresh_nav_label(view, widget),
+            )
+            self.nav_labels[key] = nav_label
+
+        self._update_nav_state()
+
+    def _draw_vertical_gradient(
+        self, canvas: tk.Canvas, width: int, height: int, start_color: str, end_color: str
+    ) -> None:
+        canvas.delete("gradient")
+        if height <= 0:
+            return
+        r1, g1, b1 = (value // 256 for value in self.root.winfo_rgb(start_color))
+        r2, g2, b2 = (value // 256 for value in self.root.winfo_rgb(end_color))
+        steps = max(1, min(height, 120))
+        for index in range(steps):
+            ratio = index / max(steps - 1, 1)
+            r = int(r1 + (r2 - r1) * ratio)
+            g = int(g1 + (g2 - g1) * ratio)
+            b = int(b1 + (b2 - b1) * ratio)
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            y0 = int(height * index / steps)
+            y1 = int(height * (index + 1) / steps)
+            canvas.create_rectangle(0, y0, width, y1, fill=color, outline="", tags="gradient")
+
+    def _on_sidebar_configure(self, event: tk.Event) -> None:
+        self._draw_vertical_gradient(
+            self.sidebar_canvas, event.width, event.height, "#f8f8f8", "#e8e8e8"
         )
-        self.search_button.grid(row=0, column=spacer_col + 1, padx=(0, 8), pady=4, sticky=tk.E)
-        self.clear_button = ttk.Button(
-            self.filter_frame, text="Clear Filters", command=self.on_clear_filters
+        self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all"))
+
+    def _refresh_nav_label(self, view: str, widget: tk.Label) -> None:
+        if view == self.active_view or (view == "inventory" and self.active_view == "dashboard"):
+            widget.configure(bg=self._sidebar_active_color, fg=self._sidebar_active_fg)
+        else:
+            widget.configure(bg=self._sidebar_base_color, fg=self._sidebar_fg)
+
+    def _update_nav_state(self) -> None:
+        for key, widget in self.nav_labels.items():
+            effective_key = "dashboard" if key == "inventory" else key
+            self._refresh_nav_label(key, widget)
+            if effective_key == self.active_view:
+                widget.configure(bg=self._sidebar_active_color, fg=self._sidebar_active_fg)
+
+    def show_view(self, view: str) -> None:
+        if view not in self.views and view != "inventory":
+            return
+        if view == "inventory":
+            view = "dashboard"
+        self.active_view = view
+        frame = self.views.get(view)
+        if frame:
+            frame.tkraise()
+        self._update_nav_state()
+
+    def _create_tile(
+        self,
+        parent: tk.Misc,
+        title: str,
+        color: str,
+        description: str,
+        command: Callable[[], None],
+    ) -> tk.Frame:
+        outer = tk.Frame(parent, bg=self._palette.get("background", "#f5f7fb"))
+        shadow_color = self._lighten_color(color, 0.35)
+        shadow = tk.Frame(outer, bg=shadow_color, bd=0, highlightthickness=0)
+        shadow.pack(fill=tk.BOTH, expand=True, padx=(6, 2), pady=(8, 2))
+
+        tile = tk.Frame(shadow, bg=color, bd=0, highlightthickness=0)
+        tile.pack(fill=tk.BOTH, expand=True)
+        tile.configure(padx=18, pady=18)
+
+        title_label = tk.Label(tile, text=title, font=("Segoe UI", 14, "bold"), bg=color, fg="#ffffff")
+        title_label.pack(anchor="w")
+        description_label = tk.Label(
+            tile,
+            text=description,
+            bg=color,
+            fg="#f5f5f5",
+            font=("Segoe UI", 10),
+            justify=tk.LEFT,
+            wraplength=220,
         )
-        self.clear_button.grid(row=0, column=spacer_col + 2, padx=(0, 0), pady=4, sticky=tk.E)
-        self.show_sold_var = tk.BooleanVar(value=False)
+        description_label.pack(anchor="w", pady=(8, 0))
+
+        hover_color = self._lighten_color(color, 0.14)
+
+        def _on_enter(_event: tk.Event) -> None:
+            tile.configure(bg=hover_color, padx=22, pady=22)
+            title_label.configure(bg=hover_color)
+            description_label.configure(bg=hover_color)
+            tile.configure(cursor="hand2")
+
+        def _on_leave(_event: tk.Event) -> None:
+            tile.configure(bg=color, padx=18, pady=18)
+            title_label.configure(bg=color)
+            description_label.configure(bg=color)
+            tile.configure(cursor="")
+
+        def _on_click(_event: tk.Event) -> None:
+            command()
+
+        for widget in (tile, title_label, description_label):
+            widget.bind("<Enter>", _on_enter)
+            widget.bind("<Leave>", _on_leave)
+            widget.bind("<Button-1>", _on_click)
+
+        self.tile_buttons.append(
+            {
+                "outer": outer,
+                "shadow": shadow,
+                "tile": tile,
+                "color": color,
+                "title": title_label,
+                "description": description_label,
+            }
+        )
+        return outer
+
+    def _lighten_color(self, color: str, factor: float) -> str:
+        color = color.lstrip("#")
+        if len(color) != 6:
+            return color
+        r = int(color[0:2], 16)
+        g = int(color[2:4], 16)
+        b = int(color[4:6], 16)
+        r = min(255, int(r + (255 - r) * factor))
+        g = min(255, int(g + (255 - g) * factor))
+        b = min(255, int(b + (255 - b) * factor))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _clear_search(self) -> None:
+        self.search_var.set("")
+
+    def _on_search_change(self, *_args: object) -> None:
+        self.load_items()
+
+    def _on_auto_save_toggle(self) -> None:
+        if self._auto_save_job:
+            self.root.after_cancel(self._auto_save_job)
+            self._auto_save_job = None
+        if self.auto_save_var.get():
+            self.log_activity("Auto-save enabled")
+            self._auto_save_job = self.root.after(60_000, self._run_auto_save)
+        else:
+            self.log_activity("Auto-save paused")
+
+    def _run_auto_save(self) -> None:
+        self.log_activity("Auto-saved inventory snapshot")
+        if self.auto_save_var.get():
+            self._auto_save_job = self.root.after(60_000, self._run_auto_save)
+
+    def _format_activity_log(self) -> str:
+        recent = self.activity_log_entries[:3]
+        return "Last 3 actions: " + ", ".join(recent)
+
+    def log_activity(self, action: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M")
+        entry = f"{action} ({timestamp})"
+        self.activity_log_entries.insert(0, entry)
+        del self.activity_log_entries[3:]
+        self.activity_log_var.set(self._format_activity_log())
+
+    def _update_user_status(self) -> None:
+        self.user_status_var.set(
+            f"Signed in as {self.current_user} | {self.sync_state_var.get()}"
+        )
+        self.last_sync_var.set(self.sync_state_var.get())
+        if self._last_loaded_items:
+            self.update_totals(list(self._last_loaded_items))
+
+    def _build_dashboard_view(self, container: ttk.Frame) -> None:
+        container.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(container)
+        header.pack(fill=tk.X, pady=(0, 12))
+        self.user_label = ttk.Label(header, textvariable=self.user_status_var, style="SubHeader.TLabel")
+        self.user_label.pack(side=tk.RIGHT)
+
+        title = ttk.Label(container, text="RugBase Inventory System", style="Hero.TLabel")
+        title.pack(anchor="center", pady=(0, 12))
+
+        tile_frame = ttk.Frame(container)
+        tile_frame.pack(fill=tk.X, pady=(0, 16))
+        tile_specs = [
+            (
+                "Inventory",
+                "#0078D7",
+                "Review live stock levels and edit catalog details.",
+                lambda: self.show_view("dashboard"),
+            ),
+            (
+                "Customers",
+                "#D13438",
+                "Manage client profiles, notes, and outreach.",
+                lambda: self.show_view("customers"),
+            ),
+            (
+                "Sales / Consignments",
+                "#107C10",
+                "Open consignments, returns, and point-of-sale tools.",
+                self.open_consignment_list,
+            ),
+            (
+                "Reports",
+                "#F7630C",
+                "Analyze performance trends and export snapshots.",
+                lambda: self.show_view("reports"),
+            ),
+            (
+                "Sync & Backup",
+                "#6B69D6",
+                "Launch Google Sheets sync and local backup workflows.",
+                lambda: self.show_view("sync"),
+            ),
+            (
+                "Label Generator",
+                "#0B5ED7",
+                "Print DYMO labels directly from the inventory.",
+                self.open_label_generator,
+            ),
+        ]
+
+        for index, spec in enumerate(tile_specs):
+            tile = self._create_tile(tile_frame, *spec)
+            row, column = divmod(index, 3)
+            tile.grid(row=row, column=column, padx=12, pady=12, sticky="nsew")
+            tile_frame.grid_columnconfigure(column, weight=1)
+
+        main_card = ttk.Frame(container, style="Card.TFrame")
+        main_card.pack(fill=tk.BOTH, expand=True)
+
+        search_row = ttk.Frame(main_card)
+        search_row.pack(fill=tk.X, pady=(0, 12))
+
+        ttk.Label(search_row, text="Live Search").pack(side=tk.LEFT)
+        self.search_entry = ttk.Entry(search_row, textvariable=self.search_var)
+        self.search_entry.pack(side=tk.LEFT, padx=(12, 8), fill=tk.X, expand=True)
+        self.clear_search_button = ttk.Button(
+            search_row, text="Clear", command=self._clear_search
+        )
+        self.clear_search_button.pack(side=tk.LEFT, padx=(0, 8))
+
         self.sold_filter_check = ttk.Checkbutton(
-            self.filter_frame,
-            text="Sold List",
+            search_row,
+            text="Sold items",
             variable=self.show_sold_var,
             command=self.load_items,
         )
-        self.sold_filter_check.grid(row=0, column=spacer_col + 3, padx=(12, 0), pady=4, sticky=tk.E)
+        self.sold_filter_check.pack(side=tk.LEFT)
 
-        self.export_frame = ttk.LabelFrame(self.dashboard_frame, text="Import & Export", padding=12)
-        self.export_frame.pack(fill=tk.X, pady=(0, 10))
+        tools_frame = ttk.Frame(search_row)
+        tools_frame.pack(side=tk.RIGHT)
 
-        self.import_csv_button = ttk.Button(
-            self.export_frame, text="Import CSV", command=self.on_import_csv
+        self.column_status_label = ttk.Label(
+            tools_frame,
+            textvariable=self.column_status_var,
+            style="Info.TLabel",
         )
-        self.import_csv_button.pack(side=tk.LEFT)
-
-        self.import_xml_button = ttk.Button(
-            self.export_frame, text="Import XML", command=self.on_import_xml
+        self.column_status_label.pack(side=tk.RIGHT)
+        self.column_check_button = ttk.Button(
+            tools_frame,
+            text="Auto Repair Columns",
+            command=self.on_check_columns,
         )
-        self.import_xml_button.pack(side=tk.LEFT, padx=(10, 0))
+        self.column_check_button.pack(side=tk.RIGHT, padx=(0, 8))
 
-        self.export_csv_button = ttk.Button(
-            self.export_frame, text="Export CSV", command=self.on_export_csv
-        )
-        self.export_csv_button.pack(side=tk.LEFT, padx=(10, 0))
-
-        self.export_xlsx_button = ttk.Button(
-            self.export_frame, text="Export XLSX", command=self.on_export_xlsx
-        )
-        self.export_xlsx_button.pack(side=tk.LEFT, padx=(10, 0))
-
-        ttk.Label(
-            self.dashboard_frame,
-            text=(
-                "Google Drive synchronization has been removed."
-                " Switch to the Sync tab to use Excel/Sheets synchronization."
-            ),
+        hint = ttk.Label(
+            main_card,
+            text="Filter by Rug No, Collection, Style, or Color. Matches update instantly as you type.",
             style="Hint.TLabel",
             wraplength=720,
-            justify=tk.LEFT,
-        ).pack(fill=tk.X, pady=(0, 10))
+        )
+        hint.pack(fill=tk.X, pady=(0, 8))
 
-        ttk.Separator(self.dashboard_frame).pack(fill=tk.X, pady=(0, 10))
-
-        self.table_frame = ttk.Frame(self.dashboard_frame)
+        self.table_frame = ttk.Frame(main_card)
         self.table_frame.pack(fill=tk.BOTH, expand=True)
+        self.table_frame.columnconfigure(0, weight=1)
+        self.table_frame.rowconfigure(0, weight=1)
 
         self.column_defs = list(db.MASTER_SHEET_COLUMNS)
         self.columns = [field for field, _ in self.column_defs]
 
-        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", height=18)
-        for field, header in self.column_defs:
+        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings")
+        for field, header_text in self.column_defs:
             anchor = tk.E if field in db.NUMERIC_FIELDS else tk.W
-            self.tree.heading(field, text=header)
-            self.tree.column(field, anchor=anchor, width=130, stretch=False)
+            self.tree.heading(field, text=header_text)
+            self.tree.column(field, anchor=anchor, width=150, stretch=False)
+
+        self.tree.tag_configure("oddrow", background="#f5f9ff")
+        self.tree.tag_configure("evenrow", background="#ffffff")
 
         yscroll = ttk.Scrollbar(self.table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         xscroll = ttk.Scrollbar(self.table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -415,94 +755,99 @@ class MainWindow:
         yscroll.grid(row=0, column=1, sticky="ns")
         xscroll.grid(row=1, column=0, sticky="ew")
 
-        self.table_frame.rowconfigure(0, weight=1)
-        self.table_frame.columnconfigure(0, weight=1)
-
         self.tree_menu = tk.Menu(self.tree, tearoff=0)
         self.tree_menu.add_command(label="Mark as Sold...", command=self.open_mark_sold_modal)
         self.tree.bind("<Button-3>", self.on_tree_right_click)
+        self.tree.bind("<Double-1>", self.on_tree_double_click)
 
-        self.grand_total_frame = ttk.Frame(self.dashboard_frame, padding=(10, 0))
-        self.grand_total_frame.pack(fill=tk.X, pady=(8, 0))
         self.grand_total_var = tk.StringVar(value="Grand Total: $0.00")
-        ttk.Label(
-            self.grand_total_frame,
-            textvariable=self.grand_total_var,
-            style="SubHeader.TLabel",
-        ).pack(side=tk.LEFT)
+        totals_frame = ttk.Frame(main_card)
+        totals_frame.pack(fill=tk.X, pady=(12, 0))
+        ttk.Label(totals_frame, textvariable=self.grand_total_var, style="SubHeader.TLabel").pack(
+            side=tk.LEFT
+        )
 
-        ttk.Separator(self.dashboard_frame).pack(fill=tk.X, pady=(10, 10))
-
-        self.button_frame = ttk.LabelFrame(self.dashboard_frame, text="Item Actions", padding=12)
-        self.button_frame.pack(fill=tk.X)
+        actions_frame = ttk.Frame(main_card)
+        actions_frame.pack(fill=tk.X, pady=(16, 0))
 
         self.add_button = ttk.Button(
-            self.button_frame, text="Add Item", style="Accent.TButton", command=self.on_add_item
+            actions_frame, text="Add Item", style="Accent.TButton", command=self.on_add_item
         )
         self.add_button.pack(side=tk.LEFT)
 
-        self.label_button = ttk.Button(
-            self.button_frame,
-            text="Generate Label (DYMO)",
-            command=self.open_label_generator,
+        self.open_button = ttk.Button(
+            actions_frame, text="Open Selected", command=self.on_open_item
         )
-        self.label_button.pack(side=tk.LEFT, padx=(10, 0))
+        self.open_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        self.label_button = ttk.Button(
+            actions_frame, text="Generate Label (DYMO)", command=self.open_label_generator
+        )
+        self.label_button.pack(side=tk.LEFT, padx=(8, 0))
 
         self.consignment_button = ttk.Button(
-            self.button_frame,
-            text="Consignment Out",
-            command=self.open_consignment_modal,
+            actions_frame, text="Consignment Out", command=self.open_consignment_modal
         )
-        self.consignment_button.pack(side=tk.LEFT, padx=(10, 0))
+        self.consignment_button.pack(side=tk.LEFT, padx=(8, 0))
 
         self.return_button = ttk.Button(
-            self.button_frame,
-            text="Consignment Returns",
-            command=self.open_return_modal,
+            actions_frame, text="Consignment Returns", command=self.open_return_modal
         )
-        self.return_button.pack(side=tk.LEFT, padx=(10, 0))
-
-        self.delete_button = ttk.Button(
-            self.button_frame, text="Delete Item", command=self.on_delete_item
-        )
-        self.delete_button.pack(side=tk.LEFT, padx=(10, 0))
+        self.return_button.pack(side=tk.LEFT, padx=(8, 0))
 
         self.consignment_list_button = ttk.Button(
-            self.button_frame,
-            text="View Consignments",
-            command=self.open_consignment_list,
+            actions_frame, text="View Consignments", command=self.open_consignment_list
         )
-        self.consignment_list_button.pack(side=tk.LEFT, padx=(10, 0))
+        self.consignment_list_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        self.open_button = ttk.Button(
-            self.button_frame, text="Open Selected", command=self.on_open_item
+        self.delete_button = ttk.Button(
+            actions_frame, text="Delete Item", command=self.on_delete_item
         )
-        self.open_button.pack(side=tk.RIGHT)
+        self.delete_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        self.tree.bind("<Double-1>", self.on_tree_double_click)
+        export_frame = ttk.Frame(main_card)
+        export_frame.pack(fill=tk.X, pady=(12, 0))
+        ttk.Button(export_frame, text="Import CSV", command=self.on_import_csv).pack(side=tk.LEFT)
+        ttk.Button(export_frame, text="Import XML", command=self.on_import_xml).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+        ttk.Button(export_frame, text="Export CSV", command=self.on_export_csv).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+        ttk.Button(export_frame, text="Export XLSX", command=self.on_export_xlsx).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+
+        automation_bar = ttk.Frame(main_card)
+        automation_bar.pack(fill=tk.X, pady=(16, 0))
+        ttk.Checkbutton(
+            automation_bar,
+            text="Auto-save to Excel every 60s",
+            variable=self.auto_save_var,
+            command=self._on_auto_save_toggle,
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(
+            automation_bar,
+            textvariable=self.activity_log_var,
+            style="SubHeader.TLabel",
+        ).pack(side=tk.RIGHT)
 
         self.sales_report_frame = ttk.LabelFrame(
-            self.dashboard_frame, text="Sales Report", padding=12
+            container, text="Sales Report", padding=16
         )
-        self.sales_report_frame.pack(fill=tk.X, pady=(10, 0))
-
+        self.sales_report_frame.pack(fill=tk.X, pady=(16, 0))
         range_frame = ttk.Frame(self.sales_report_frame)
         range_frame.pack(fill=tk.X)
         ttk.Label(range_frame, text="Range:").pack(side=tk.LEFT)
         ttk.Button(
-            range_frame,
-            text="30d",
-            command=lambda: self.set_sales_report_period(30),
+            range_frame, text="30d", command=lambda: self.set_sales_report_period(30)
         ).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
-            range_frame,
-            text="90d",
-            command=lambda: self.set_sales_report_period(90),
+            range_frame, text="90d", command=lambda: self.set_sales_report_period(90)
         ).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
-            range_frame,
-            text="All",
-            command=lambda: self.set_sales_report_period(None),
+            range_frame, text="All", command=lambda: self.set_sales_report_period(None)
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         self.sales_report_var = tk.StringVar(value="Sales data not available.")
@@ -512,31 +857,22 @@ class MainWindow:
             style="SubHeader.TLabel",
         ).pack(fill=tk.X, pady=(6, 0))
 
-        self.footer_frame = ttk.Frame(self.dashboard_frame, padding=(10, 0, 10, 10))
-        self.footer_frame.pack(fill=tk.X, pady=(10, 0))
+        self.footer_frame = ttk.Frame(container, padding=(0, 12, 0, 0))
+        self.footer_frame.pack(fill=tk.X, pady=(16, 0))
 
-        self.totals_var = tk.StringVar(value="Total items: 0    Total area: 0.00")
-        self.totals_label = ttk.Label(self.footer_frame, textvariable=self.totals_var)
-        self.totals_label.pack(side=tk.LEFT)
-
-        self.column_status_label = ttk.Label(
-            self.footer_frame,
-            textvariable=self.column_status_var,
-            style="Info.TLabel",
-        )
-        self.column_status_label.pack(side=tk.LEFT, padx=(12, 0))
-
-        self.column_check_button = ttk.Button(
-            self.footer_frame, text="Check Columns", command=self.on_check_columns
-        )
-        self.column_check_button.pack(side=tk.RIGHT)
+        self.summary_label = ttk.Label(self.footer_frame, textvariable=self.summary_var)
+        self.summary_label.pack(side=tk.LEFT)
 
         self.update_button = ttk.Button(
             self.footer_frame, text="Check for Updates", command=self.on_check_for_updates
         )
-        self.update_button.pack(side=tk.RIGHT, padx=(10, 0))
+        self.update_button.pack(side=tk.RIGHT)
 
-        self.version_label = ttk.Label(self.footer_frame, text=f"Version {__version__}")
+        self.version_label = ttk.Label(
+            self.footer_frame,
+            text=f"Version {__version__}",
+            style="SubHeader.TLabel",
+        )
         self.version_label.pack(side=tk.RIGHT, padx=(0, 12))
 
     def load_items(self) -> None:
@@ -544,27 +880,20 @@ class MainWindow:
             self.tree.delete(row)
 
         items = self.get_filtered_rows()
-        for item in items:
+        self._last_loaded_items = list(items)
+        for index, item in enumerate(items):
+            tag = "evenrow" if index % 2 == 0 else "oddrow"
             self.tree.insert(
                 "",
                 tk.END,
                 iid=item["item_id"],
                 values=self._format_item_values(item),
+                tags=(tag,),
             )
 
         self.update_totals(items)
         self.refresh_sales_report()
         self._autosize_columns()
-
-    def on_search(self) -> None:
-        self.load_items()
-
-    def on_clear_filters(self) -> None:
-        self.rug_no_var.set("")
-        self.collection_var.set("")
-        self.brand_var.set("")
-        self.style_var.set("")
-        self.load_items()
 
     def on_tree_double_click(self, event: tk.Event) -> None:
         self.open_selected_item()
@@ -584,6 +913,7 @@ class MainWindow:
         self.open_selected_item()
 
     def on_add_item(self) -> None:
+        self.log_activity("Opened new inventory item")
         ItemCardWindow(self.root, None, on_save=self.load_items)
 
     def open_label_generator(self) -> None:
@@ -592,6 +922,7 @@ class MainWindow:
             return
         self.label_window = LabelGeneratorWindow(self.root, on_close=self._clear_label_window)
         self.label_window.apply_theme(self._palette)
+        self.log_activity("Opened label generator")
 
     def on_open_label_generator(self, _event: tk.Event) -> None:
         self.open_label_generator()
@@ -600,9 +931,11 @@ class MainWindow:
         self.label_window = None
 
     def open_consignment_modal(self) -> None:
+        self.log_activity("Opened consignment out")
         ConsignmentModal(self.root, self.current_user)
 
     def open_return_modal(self) -> None:
+        self.log_activity("Opened consignment return")
         ReturnModal(self.root, self.current_user)
 
     def on_check_columns(self) -> None:
@@ -624,8 +957,10 @@ class MainWindow:
             message = "Tüm gerekli sütunlar mevcut."
             messagebox.showinfo("Inventory Columns", message)
         self.column_status_var.set(message)
+        self.log_activity("Column audit complete")
 
     def open_consignment_list(self) -> None:
+        self.log_activity("Viewed consignments")
         ConsignmentListWindow(self.root)
 
     def get_selected_item_id(self) -> Optional[str]:
@@ -662,17 +997,28 @@ class MainWindow:
 
     def _on_sale_completed(self) -> None:
         self.load_items()
+        self.log_activity("Sale completed")
 
     def _on_customer_created_from_sale(self, _record: Dict[str, Any]) -> None:
         self.load_customers()
+        self.log_activity("Customer added from sale")
 
-    def _build_customers_tab(self, container: ttk.Frame) -> None:
+    def _build_customers_view(self, container: ttk.Frame) -> None:
         container.columnconfigure(0, weight=3)
         container.columnconfigure(1, weight=2)
-        container.rowconfigure(0, weight=1)
+        container.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(container)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        ttk.Label(header, text="Customers", style="Header.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            header,
+            text="Maintain customer contact details, notes, and purchase history.",
+            style="Hint.TLabel",
+        ).pack(anchor=tk.W, pady=(2, 0))
 
         list_frame = ttk.LabelFrame(container, text="Customer List", padding=12)
-        list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        list_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(1, weight=1)
 
@@ -717,7 +1063,7 @@ class MainWindow:
         self.customer_tree.bind("<Double-1>", self.on_customer_double_click)
 
         form_frame = ttk.LabelFrame(container, text="Add Customer", padding=12)
-        form_frame.grid(row=0, column=1, sticky="nsew")
+        form_frame.grid(row=1, column=1, sticky="nsew")
         form_frame.columnconfigure(1, weight=1)
 
         form_fields = [
@@ -757,6 +1103,31 @@ class MainWindow:
             style="Accent.TButton",
             command=self.save_customer_from_form,
         ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self.customer_tree.bind("<<TreeviewSelect>>", self.on_customer_select)
+        self.customer_search_var.trace_add("write", lambda *_: self.filter_customer_records())
+
+    def _build_sync_view(self, container: ttk.Frame) -> None:
+        ttk.Label(container, text="Sync & Backup", style="Header.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            container,
+            text="Synchronize with Google Sheets, review history, and manage backups.",
+            style="Hint.TLabel",
+        ).pack(anchor=tk.W, pady=(2, 12))
+
+        self.sync_panel = SyncPanel(container)
+        self.sync_panel.pack(fill=tk.BOTH, expand=True)
+
+    def _build_placeholder_view(
+        self, container: ttk.Frame, title: str, description: str
+    ) -> None:
+        container.columnconfigure(0, weight=1)
+        ttk.Label(container, text=title, style="Header.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 6)
+        )
+        ttk.Label(container, text=description, style="Hint.TLabel", wraplength=640).grid(
+            row=1, column=0, sticky="w"
+        )
 
     def load_customers(self) -> None:
         if not self.customer_tree:
@@ -834,6 +1205,7 @@ class MainWindow:
         self.load_customers()
         if record.get("id"):
             self.customer_records[int(record["id"])] = record
+        self.log_activity("Customer saved")
 
     def save_customer_from_form(self) -> None:
         data = {key: var.get().strip() for key, var in self.customer_form_vars.items()}
@@ -856,6 +1228,7 @@ class MainWindow:
         if record:
             messagebox.showinfo("Add Customer", "Customer added successfully.")
             self.customer_records[int(customer_id)] = record
+            self.log_activity("Added customer")
 
     def clear_customer_form(self) -> None:
         for variable in self.customer_form_vars.values():
@@ -886,21 +1259,33 @@ class MainWindow:
 
         self.load_items()
         messagebox.showinfo("Delete Item", "The selected item has been deleted.")
+        self.log_activity(f"Deleted item {item_label}")
 
     def get_filtered_rows(self) -> list[dict]:
-        rug_no_filter = self.rug_no_var.get().strip() or None
-        collection_filter = self.collection_var.get().strip() or None
-        brand_filter = self.brand_var.get().strip() or None
-        style_filter = self.style_var.get().strip() or None
         status_filter = "sold" if self.show_sold_var.get() else None
+        try:
+            items = db.fetch_items(status_filter=status_filter)
+        except Exception as exc:
+            messagebox.showerror("Inventory", f"Failed to load inventory: {exc}")
+            return []
 
-        return db.fetch_items(
-            rug_no_filter,
-            collection_filter,
-            brand_filter,
-            style_filter,
-            status_filter,
-        )
+        query = self.search_var.get().strip().lower()
+        if not query:
+            return items
+
+        tokens = query.split()
+        filtered: list[dict] = []
+        for item in items:
+            haystacks = [
+                str(item.get("rug_no", "")).lower(),
+                str(item.get("collection", "")).lower(),
+                str(item.get("style", "")).lower(),
+                str(item.get("ground", "")).lower(),
+                str(item.get("border", "")).lower(),
+            ]
+            if all(any(token in hay for hay in haystacks) for token in tokens):
+                filtered.append(item)
+        return filtered
 
     def _format_item_values(self, item: dict) -> tuple[str, ...]:
         values: list[str] = []
@@ -935,8 +1320,11 @@ class MainWindow:
 
     def update_totals(self, items: list[dict]) -> None:
         total_items = len(items)
-        total_area = sum((item["area"] or 0.0) for item in items)
-        self.totals_var.set(f"Total items: {total_items}    Total area: {total_area:.2f}")
+        total_area = sum((item.get("area") or 0.0) for item in items)
+        summary = (
+            f"Total Items: {total_items} | Total Area: {total_area:.2f} sq ft | Last Sync: {self.last_sync_var.get()}"
+        )
+        self.summary_var.set(summary)
 
         total_value = 0.0
         for item in items:
@@ -992,6 +1380,8 @@ class MainWindow:
                     writer.writerow(self._format_item_values(item))
         except OSError as exc:
             messagebox.showerror("Export CSV", f"Failed to export CSV: {exc}")
+        else:
+            self.log_activity("Exported CSV")
 
     def on_export_xlsx(self) -> None:
         items = self.get_filtered_rows()
@@ -1013,6 +1403,8 @@ class MainWindow:
             workbook.save(file_path)
         except OSError as exc:
             messagebox.showerror("Export XLSX", f"Failed to export XLSX: {exc}")
+        else:
+            self.log_activity("Exported XLSX")
 
     def on_check_for_updates(self) -> None:
         """Prompt the user to download the latest RugBase release."""
@@ -1046,6 +1438,7 @@ class MainWindow:
             return
 
         self._handle_import_result(result, "Import CSV")
+        self.log_activity("Imported CSV")
 
     def on_import_xml(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -1062,6 +1455,7 @@ class MainWindow:
             return
 
         self._handle_import_result(result, "Import XML")
+        self.log_activity("Imported XML")
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
