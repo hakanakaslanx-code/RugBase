@@ -171,9 +171,35 @@ def fetch_active_consignments() -> List[Dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             """
-            SELECT * FROM consignments
-             WHERE status IN ('active', 'sold')
-             ORDER BY datetime(created_at) DESC
+            SELECT
+                c.*,
+                COALESCE(lines.total_out, 0) AS total_out,
+                COALESCE(lines.total_returned, 0) AS total_returned,
+                COALESCE(lines.line_count, 0) AS line_count,
+                cu.id AS customer_id,
+                cu.full_name AS customer_full_name,
+                cu.phone AS customer_phone,
+                cu.email AS customer_email,
+                cu.address AS customer_address,
+                cu.city AS customer_city,
+                cu.state AS customer_state,
+                cu.zip AS customer_zip,
+                cu.notes AS customer_notes
+            FROM consignments c
+            LEFT JOIN (
+                SELECT
+                    consignment_id,
+                    SUM(CASE WHEN state = 'out' THEN qty ELSE 0 END) AS total_out,
+                    SUM(CASE WHEN state = 'returned' THEN qty ELSE 0 END) AS total_returned,
+                    COUNT(id) AS line_count
+                FROM consignment_lines
+                GROUP BY consignment_id
+            ) AS lines
+                ON lines.consignment_id = c.id
+            LEFT JOIN customers cu
+                ON LOWER(TRIM(c.partner_name)) = LOWER(TRIM(cu.full_name))
+            WHERE c.status IN ('active', 'sold')
+            ORDER BY datetime(c.created_at) DESC
             """
         )
         return [dict(row) for row in cursor.fetchall()]
@@ -184,12 +210,33 @@ def fetch_all_consignments() -> List[Dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             """
-            SELECT c.*, COALESCE(SUM(CASE WHEN cl.state = 'out' THEN cl.qty ELSE 0 END), 0) AS total_out,
-                   COALESCE(SUM(CASE WHEN cl.state = 'returned' THEN cl.qty ELSE 0 END), 0) AS total_returned,
-                   COUNT(cl.id) AS line_count
+            SELECT
+                c.*,
+                COALESCE(lines.total_out, 0) AS total_out,
+                COALESCE(lines.total_returned, 0) AS total_returned,
+                COALESCE(lines.line_count, 0) AS line_count,
+                cu.id AS customer_id,
+                cu.full_name AS customer_full_name,
+                cu.phone AS customer_phone,
+                cu.email AS customer_email,
+                cu.address AS customer_address,
+                cu.city AS customer_city,
+                cu.state AS customer_state,
+                cu.zip AS customer_zip,
+                cu.notes AS customer_notes
             FROM consignments c
-            LEFT JOIN consignment_lines cl ON cl.consignment_id = c.id
-            GROUP BY c.id
+            LEFT JOIN (
+                SELECT
+                    consignment_id,
+                    SUM(CASE WHEN state = 'out' THEN qty ELSE 0 END) AS total_out,
+                    SUM(CASE WHEN state = 'returned' THEN qty ELSE 0 END) AS total_returned,
+                    COUNT(id) AS line_count
+                FROM consignment_lines
+                GROUP BY consignment_id
+            ) AS lines
+                ON lines.consignment_id = c.id
+            LEFT JOIN customers cu
+                ON LOWER(TRIM(c.partner_name)) = LOWER(TRIM(cu.full_name))
             ORDER BY datetime(c.created_at) DESC
             """
         )
@@ -215,7 +262,16 @@ def fetch_consignment_lines(consignment_id: int) -> List[Dict[str, Any]]:
 def fetch_partner_names() -> List[str]:
     with db.get_connection() as conn:
         cursor = conn.execute(
-            "SELECT DISTINCT partner_name FROM consignments ORDER BY LOWER(partner_name)"
+            """
+            SELECT DISTINCT name
+            FROM (
+                SELECT TRIM(partner_name) AS name FROM consignments WHERE partner_name IS NOT NULL
+                UNION
+                SELECT TRIM(full_name) AS name FROM customers WHERE full_name IS NOT NULL
+            )
+            WHERE name <> ''
+            ORDER BY LOWER(name)
+            """
         )
         return [row[0] for row in cursor.fetchall() if row[0]]
 
