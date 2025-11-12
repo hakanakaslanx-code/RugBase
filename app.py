@@ -37,11 +37,11 @@ def main() -> None:
         return
 
     with instance_lock:
-        db.initialize_database()
+        column_changes = db.initialize_database()
         root = tk.Tk()
         root.title(f"RugBase Inventory v{__version__}")
         root.geometry("1000x600")
-        MainWindow(root)
+        MainWindow(root, column_changes=column_changes)
         root.mainloop()
 
 

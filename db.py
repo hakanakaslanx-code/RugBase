@@ -189,6 +189,33 @@ MASTER_SHEET_FIELDS: Tuple[str, ...] = tuple(field for field, _ in MASTER_SHEET_
 
 NUMERIC_FIELDS = {"area", "sp", "cost"}
 
+# Mapping of module-level field names to database column definitions.
+# This helps keep the inventory table aligned with UI components such as the
+# barcode and label generator, which expect these fields to be present.
+MODULE_FIELD_COLUMN_MAP: Dict[str, Tuple[str, str]] = {
+    "RugNo": ("rug_no", "TEXT"),
+    "MSRP": ("msrp", "TEXT"),
+    "Color": ("ground", "TEXT"),
+    "Content": ("content", "TEXT"),
+    "Origin": ("origin", "TEXT"),
+    "Style": ("style", "TEXT"),
+    "Type": ("type", "TEXT"),
+}
+
+MODULE_COLUMN_DEFINITIONS: Dict[str, str] = {}
+for module_field, (column, definition) in MODULE_FIELD_COLUMN_MAP.items():
+    MODULE_COLUMN_DEFINITIONS[column] = definition
+
+ADDITIONAL_ITEM_FIELDS: Tuple[str, ...] = tuple(
+    column for column in MODULE_COLUMN_DEFINITIONS if column not in MASTER_SHEET_FIELDS
+)
+
+COLUMN_DISPLAY_NAMES: Dict[str, str] = {}
+for module_field, (column, _definition) in MODULE_FIELD_COLUMN_MAP.items():
+    COLUMN_DISPLAY_NAMES.setdefault(column, module_field)
+
+INVENTORY_CORE_FIELDS: Tuple[str, ...] = MASTER_SHEET_FIELDS + ADDITIONAL_ITEM_FIELDS
+
 TABLE_COLUMNS: List[Tuple[str, str]] = [
     ("item_id", "TEXT PRIMARY KEY"),
     ("rb_id", "TEXT UNIQUE"),
@@ -196,6 +223,7 @@ TABLE_COLUMNS: List[Tuple[str, str]] = [
         (field, "REAL" if field in NUMERIC_FIELDS else "TEXT")
         for field in MASTER_SHEET_FIELDS
     ],
+    *[(field, MODULE_COLUMN_DEFINITIONS.get(field, "TEXT")) for field in ADDITIONAL_ITEM_FIELDS],
     ("qty", "INTEGER DEFAULT 0"),
     ("created_at", "TEXT"),
     ("updated_at", "TEXT"),
@@ -212,7 +240,7 @@ TABLE_COLUMNS: List[Tuple[str, str]] = [
 ]
 
 UPDATABLE_FIELDS: Tuple[str, ...] = (
-    *MASTER_SHEET_FIELDS,
+    *INVENTORY_CORE_FIELDS,
     "qty",
     "status",
     "location",
@@ -360,10 +388,11 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def initialize_database() -> None:
+def initialize_database() -> List[str]:
     db_directory = os.path.dirname(DB_PATH)
     if db_directory and not os.path.exists(db_directory):
         os.makedirs(db_directory, exist_ok=True)
+    added_columns: List[str] = []
     with get_connection() as conn:
         conn.execute(CREATE_ITEM_TABLE_SQL)
         conn.execute(CUSTOMER_TABLE_SQL)
@@ -371,7 +400,7 @@ def initialize_database() -> None:
         conn.execute(CONFLICTS_TABLE_SQL)
         conn.execute(PROCESSED_STOCK_TXN_TABLE_SQL)
         conn.execute(SYNC_QUEUE_TABLE_SQL)
-        _ensure_columns(conn)
+        added_columns = _ensure_columns(conn)
         cursor = conn.execute("SELECT COUNT(*) FROM item")
         count = cursor.fetchone()[0]
         if count == 0:
@@ -408,6 +437,14 @@ def initialize_database() -> None:
     from consignment_repo import migrate
 
     migrate()
+    return added_columns
+
+
+def ensure_inventory_columns() -> List[str]:
+    """Ensure that all required inventory columns exist, returning any additions."""
+
+    with get_connection() as conn:
+        return _ensure_columns(conn)
 
 
 def fetch_items(
@@ -420,7 +457,7 @@ def fetch_items(
     select_fields = [
         "item_id",
         "rb_id",
-        *MASTER_SHEET_FIELDS,
+        *INVENTORY_CORE_FIELDS,
         "qty",
         "created_at",
         "updated_at",
@@ -477,7 +514,7 @@ def search_items_for_labels(
     select_fields = [
         "item_id",
         "rb_id",
-        *MASTER_SHEET_FIELDS,
+        *INVENTORY_CORE_FIELDS,
         "qty",
         "created_at",
         "updated_at",
@@ -515,7 +552,7 @@ def search_items_for_labels(
 
 
 def fetch_distinct_values(field: str) -> List[str]:
-    if field not in MASTER_SHEET_FIELDS:
+    if field not in INVENTORY_CORE_FIELDS:
         raise ValueError(f"Bilinmeyen alan: {field}")
 
     query = (
@@ -533,7 +570,7 @@ def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
     select_fields = [
         "item_id",
         "rb_id",
-        *MASTER_SHEET_FIELDS,
+        *INVENTORY_CORE_FIELDS,
         "qty",
         "created_at",
         "updated_at",
@@ -1274,9 +1311,11 @@ def calculate_area(
     return None
 
 
-def _ensure_columns(conn: sqlite3.Connection) -> None:
+def _ensure_columns(conn: sqlite3.Connection) -> List[str]:
     cursor = conn.execute("PRAGMA table_info(item)")
     existing_columns = {row[1] for row in cursor.fetchall()}
+
+    added_columns: List[str] = []
 
     for column, definition in TABLE_COLUMNS:
         if column not in existing_columns:
@@ -1298,6 +1337,16 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
                     f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON item({column})"
                 )
             existing_columns.add(column)
+            added_columns.append(column)
+
+    if added_columns:
+        readable_names = [COLUMN_DISPLAY_NAMES.get(name, name) for name in added_columns]
+        logger.info(
+            "Added missing inventory columns: %s",
+            ", ".join(readable_names),
+        )
+    else:
+        logger.debug("Inventory columns are up to date.")
 
     # Normalise timestamps and versions for existing rows
     conn.execute("UPDATE item SET created_at = REPLACE(created_at, ' ', 'T') WHERE created_at LIKE '% %'")
@@ -1315,3 +1364,4 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         if not row[1]:
             conn.execute("UPDATE item SET rb_id = ? WHERE item_id = ?", (str(uuid.uuid4()), row[0]))
     conn.commit()
+    return added_columns
