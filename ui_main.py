@@ -71,15 +71,11 @@ class MainWindow:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
-        # Bind the ttkbootstrap style instance to the existing Tk root window.
-        #
-        # Without explicitly passing the master, ttkbootstrap creates its own
-        # hidden root which results in widget constructors (like ``tk.Menu``)
-        # receiving unexpected master values.  This surfaced as ``TclError:
-        # expected integer but got "UI"`` when building the menu bar.
-        # Providing ``master`` ensures ttkbootstrap uses the same root window
-        # that the rest of the UI is attached to.
-        self.style = Style(master=root, theme="flatly")
+        # Initialize ttkbootstrap styling for the current Tk root window.  Newer
+        # releases of ttkbootstrap no longer accept a ``master`` keyword
+        # argument, so simply instantiating ``Style`` after creating the root
+        # window ensures that the existing root is reused.
+        self.style = Style(theme="flatly")
         self.dark_mode_var = tk.BooleanVar(value=False)
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", self._on_search_change)
