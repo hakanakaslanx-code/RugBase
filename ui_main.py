@@ -1174,6 +1174,30 @@ class MainWindow:
             )
             self.customer_tree.insert("", tk.END, iid=str(customer_id), values=values)
 
+    def filter_customer_records(self) -> None:
+        """Refresh the customer list based on the current search entry."""
+
+        # ``load_customers`` already applies the search term, so simply reuse it.
+        # Keeping the filtering logic in a single place avoids subtle
+        # discrepancies between incremental filtering and explicit refreshes.
+        self.load_customers()
+
+    def on_customer_select(self, _event: tk.Event) -> None:
+        """Cache the currently selected customer for later interactions."""
+
+        customer_id = self.get_selected_customer_id()
+        if customer_id is None:
+            return
+
+        if customer_id not in self.customer_records:
+            try:
+                record = db.fetch_customer(customer_id)
+            except Exception:
+                logger.exception("Failed to fetch selected customer", extra={"id": customer_id})
+                return
+            if record:
+                self.customer_records[customer_id] = record
+
     def on_customer_search(self) -> None:
         self.load_customers()
 
