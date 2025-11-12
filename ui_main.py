@@ -71,7 +71,7 @@ class MainWindow:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
-        self.style = Style(master=self.root, theme="flatly")
+        self.style = Style(theme="flatly")
         self.dark_mode_var = tk.BooleanVar(value=False)
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", self._on_search_change)
