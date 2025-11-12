@@ -123,9 +123,18 @@ class MainWindow:
         self._update_user_status()
 
     def _configure_style(self) -> None:
-        self.root.option_add("*Font", "Segoe UI 10")
-        self.root.option_add("*TButton.Font", "Segoe UI 10")
-        self.root.option_add("*TLabel.Font", "Segoe UI 10")
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(family="Segoe UI", size=10)
+
+        text_font = tkfont.nametofont("TkTextFont")
+        text_font.configure(family="Segoe UI", size=10)
+
+        menu_font = tkfont.nametofont("TkMenuFont")
+        menu_font.configure(family="Segoe UI", size=10)
+
+        self.style.configure(".", font=default_font)
+        self.style.configure("TButton", font=default_font)
+        self.style.configure("TLabel", font=default_font)
         self.style.configure("Header.TLabel", font=("Segoe UI", 18, "bold"))
         self.style.configure("Hero.TLabel", font=("Segoe UI", 24, "bold"))
         self.style.configure("SubHeader.TLabel", font=("Segoe UI", 10))
