@@ -1,0 +1,311 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2008/01/reportdefinition" xmlns:rd="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">
+  <AutoRefresh>0</AutoRefresh>
+  <DataSources>
+    <DataSource Name="InventoryDataSource">
+      <ConnectionProperties>
+        <DataProvider>System.Data.DataSet</DataProvider>
+        <ConnectString />
+      </ConnectionProperties>
+      <rd:DataSourceID>3c97d6cf-cb2f-4a84-9f60-513b87b032f5</rd:DataSourceID>
+    </DataSource>
+  </DataSources>
+  <Body>
+    <Height>2.01in</Height>
+    <ReportItems>
+      <Textbox Name="PriceText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>=IIf(Not IsNothing(Fields!SP.Value) AND Fields!SP.Value &lt;&gt; "", "Price $" &amp; Fields!SP.Value, IIf(Not IsNothing(Fields!Price.Value) AND Fields!Price.Value &lt;&gt; "", "Price $" &amp; Fields!Price.Value, IIf(Not IsNothing(Fields!MSRP.Value) AND Fields!MSRP.Value &lt;&gt; "", "Price $" &amp; Fields!MSRP.Value, "")))</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>11pt</FontSize>
+                  <FontWeight>Normal</FontWeight>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>PriceText</rd:DefaultName>
+        <Top>0.05in</Top>
+        <Left>0in</Left>
+        <Height>0.22in</Height>
+        <Width>1in</Width>
+        <Style>
+          <TextAlign>Center</TextAlign>
+          <VerticalAlign>Middle</VerticalAlign>
+        </Style>
+      </Textbox>
+      <Image Name="BarcodeImage">
+        <Source>Database</Source>
+        <Value>=Fields!BarcodeImage.Value</Value>
+        <MIMEType>image/png</MIMEType>
+        <Sizing>FitProportional</Sizing>
+        <Top>0.32in</Top>
+        <Left>0.05in</Left>
+        <Height>0.45in</Height>
+        <Width>0.9in</Width>
+        <Style>
+          <Border>
+            <Style>None</Style>
+          </Border>
+        </Style>
+      </Image>
+      <Textbox Name="CollectionText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>=IIf(Not IsNothing(Fields!Collection.Value) AND Fields!Collection.Value &lt;&gt; "", Fields!Collection.Value, Fields!VCollection.Value)</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>9pt</FontSize>
+                  <FontWeight>Bold</FontWeight>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>CollectionText</rd:DefaultName>
+        <Top>0.82in</Top>
+        <Left>0in</Left>
+        <Height>0.18in</Height>
+        <Width>1in</Width>
+        <Style>
+          <TextAlign>Center</TextAlign>
+          <VerticalAlign>Middle</VerticalAlign>
+        </Style>
+      </Textbox>
+      <Textbox Name="DesignText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>="Design : " &amp; IIf(Not IsNothing(Fields!Design.Value) AND Fields!Design.Value &lt;&gt; "", Fields!Design.Value, Fields!VDesign.Value)</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>8pt</FontSize>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>DesignText</rd:DefaultName>
+        <Top>1.04in</Top>
+        <Left>0.05in</Left>
+        <Height>0.16in</Height>
+        <Width>0.9in</Width>
+      </Textbox>
+      <Textbox Name="ColorText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>="Color  : " &amp; Trim(IIf(Not IsNothing(Fields!Ground.Value) AND Fields!Ground.Value &lt;&gt; "", Fields!Ground.Value, "") &amp; IIf(Not IsNothing(Fields!Border.Value) AND Fields!Border.Value &lt;&gt; "", "/" &amp; Fields!Border.Value, ""))</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>8pt</FontSize>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>ColorText</rd:DefaultName>
+        <Top>1.20in</Top>
+        <Left>0.05in</Left>
+        <Height>0.16in</Height>
+        <Width>0.9in</Width>
+      </Textbox>
+      <Textbox Name="SizeText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>="Size   : " &amp; IIf(Not IsNothing(Fields!ASize.Value) AND Fields!ASize.Value &lt;&gt; "", Fields!ASize.Value, Fields!StSize.Value)</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>8pt</FontSize>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>SizeText</rd:DefaultName>
+        <Top>1.36in</Top>
+        <Left>0.05in</Left>
+        <Height>0.16in</Height>
+        <Width>0.9in</Width>
+      </Textbox>
+      <Textbox Name="OriginText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>="Origin : " &amp; Fields!Origin.Value</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>8pt</FontSize>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>OriginText</rd:DefaultName>
+        <Top>1.52in</Top>
+        <Left>0.05in</Left>
+        <Height>0.16in</Height>
+        <Width>0.9in</Width>
+      </Textbox>
+      <Textbox Name="ContentText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>="Content: " &amp; Fields!Content.Value</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>8pt</FontSize>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>ContentText</rd:DefaultName>
+        <Top>1.68in</Top>
+        <Left>0.05in</Left>
+        <Height>0.16in</Height>
+        <Width>0.9in</Width>
+      </Textbox>
+      <Textbox Name="RugNumberText">
+        <CanGrow>true</CanGrow>
+        <KeepTogether>true</KeepTogether>
+        <Paragraphs>
+          <Paragraph>
+            <TextRuns>
+              <TextRun>
+                <Value>="Rug #  : " &amp; IIf(Not IsNothing(Fields!RugNo.Value) AND Fields!RugNo.Value &lt;&gt; "", Fields!RugNo.Value, Fields!RollNo.Value)</Value>
+                <Style>
+                  <FontFamily>Arial</FontFamily>
+                  <FontSize>8pt</FontSize>
+                </Style>
+              </TextRun>
+            </TextRuns>
+            <Style />
+          </Paragraph>
+        </Paragraphs>
+        <rd:DefaultName>RugNumberText</rd:DefaultName>
+        <Top>1.84in</Top>
+        <Left>0.05in</Left>
+        <Height>0.16in</Height>
+        <Width>0.9in</Width>
+      </Textbox>
+    </ReportItems>
+  </Body>
+  <Width>1in</Width>
+  <Page>
+    <LeftMargin>0.06in</LeftMargin>
+    <RightMargin>0.06in</RightMargin>
+    <TopMargin>0.06in</TopMargin>
+    <BottomMargin>0.06in</BottomMargin>
+    <PageHeight>2.125in</PageHeight>
+    <PageWidth>1in</PageWidth>
+  </Page>
+  <rd:ReportID>f6f0dcd2-5a25-4ed2-a240-91735f6a3a3a</rd:ReportID>
+  <DataSets>
+    <DataSet Name="Inventory">
+      <Fields>
+        <Field Name="RugNo">
+          <DataField>RugNo</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="RollNo">
+          <DataField>RollNo</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="MSRP">
+          <DataField>MSRP</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="SP">
+          <DataField>SP</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Price">
+          <DataField>Price</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Collection">
+          <DataField>Collection</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="VCollection">
+          <DataField>VCollection</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Design">
+          <DataField>Design</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="VDesign">
+          <DataField>VDesign</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Ground">
+          <DataField>Ground</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Border">
+          <DataField>Border</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="ASize">
+          <DataField>ASize</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="StSize">
+          <DataField>StSize</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Origin">
+          <DataField>Origin</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Content">
+          <DataField>Content</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="BarcodeImage">
+          <DataField>BarcodeImage</DataField>
+          <rd:TypeName>System.Byte[]</rd:TypeName>
+        </Field>
+      </Fields>
+      <Query>
+        <DataSourceName>InventoryDataSource</DataSourceName>
+        <CommandText>/* Local dataset */</CommandText>
+      </Query>
+    </DataSet>
+  </DataSets>
+</Report>
