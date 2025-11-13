@@ -1498,7 +1498,13 @@ class MainWindow:
 
     def update_totals(self, items: list[dict]) -> None:
         total_items = len(items)
-        total_area = sum((item.get("area") or 0.0) for item in items)
+        total_area = 0.0
+        for item in items:
+            value = item.get("area")
+            try:
+                total_area += float(value or 0)
+            except (TypeError, ValueError):
+                continue
         summary = (
             f"Total Items: {total_items} | Total Area: {total_area:.2f} sq ft | Last Sync: {self.last_sync_var.get()}"
         )
