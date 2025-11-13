@@ -42,6 +42,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optio
 
 import db
 from core import app_paths
+from core.google_credentials import CredentialsFileInvalidError, ensure_service_account_file
 from core.version import __version__ as APP_VERSION
 from core.conflicts import record as record_conflict
 from core.offline_queue import OutboxQueue
@@ -224,12 +225,12 @@ class CredentialsFileNotFoundError(SheetsSyncError):
     """Raised when the configured credentials file cannot be located."""
 
 
-class CredentialsFileInvalidError(SheetsSyncError):
-    """Raised when the configured credentials file is invalid."""
-
-
 class SpreadsheetAccessError(SheetsSyncError):
     """Raised when the Google Sheets API returns an error."""
+
+
+class SheetsPermissionError(SheetsSyncError):
+    """Raised when the service account lacks sufficient permissions."""
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +301,7 @@ def _require_api() -> None:
         )
 
 
-def get_client(credentials_path: str):
+def get_client(credentials_path: str, payload: Optional[Mapping[str, object]] = None):
     """Return an authenticated Sheets API client using the service account."""
 
     _require_api()
@@ -309,14 +310,144 @@ def get_client(credentials_path: str):
         raise CredentialsFileNotFoundError(f"Credentials file not found: {path}")
 
     try:
-        credentials = service_account.Credentials.from_service_account_file(  # type: ignore[union-attr]
-            str(path), scopes=SCOPES
+        data = payload or ensure_service_account_file(path)
+        credentials = service_account.Credentials.from_service_account_info(  # type: ignore[union-attr]
+            data, scopes=SCOPES
         )
     except ValueError as exc:  # pragma: no cover - invalid key file
-        raise CredentialsFileInvalidError(
-            "Credentials file could not be read. Verify the JSON format."
-        ) from exc
+        raise CredentialsFileInvalidError(str(exc) or "JSON eksik alanlar: private_key") from exc
     return build("sheets", "v4", credentials=credentials, cache_discovery=False)  # type: ignore[call-arg]
+
+
+def _quote_title(title: str) -> str:
+    escaped = (title or "").replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _a1_range(title: str, range_spec: str) -> str:
+    return f"{_quote_title(title)}!{range_spec}"
+
+
+def _http_status(exc: HttpError) -> int:
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        try:
+            return int(status)
+        except (TypeError, ValueError):
+            return 0
+    resp = getattr(exc, "resp", None)
+    if resp is not None:
+        try:
+            return int(getattr(resp, "status", 0))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _resolve_worksheet(
+    metadata: Mapping[str, Any],
+    worksheet_title: str,
+    sheet_gid: str,
+) -> Tuple[str, Optional[int]]:
+    sheets = metadata.get("sheets", []) if isinstance(metadata, Mapping) else []
+    candidates: List[Tuple[str, Optional[int]]] = []
+    for sheet in sheets:
+        if not isinstance(sheet, Mapping):
+            continue
+        props = sheet.get("properties", {})
+        if not isinstance(props, Mapping):
+            continue
+        title = props.get("title")
+        sheet_id = props.get("sheetId")
+        if isinstance(title, str):
+            candidates.append((title, sheet_id if isinstance(sheet_id, int) else None))
+
+    normalised_title = (worksheet_title or "").strip()
+    gid_candidate = str(sheet_gid or "").strip()
+
+    if normalised_title:
+        lower = normalised_title.lower()
+        for title, sheet_id in candidates:
+            if title.lower() == lower:
+                return title, sheet_id
+
+    if gid_candidate:
+        for title, sheet_id in candidates:
+            if sheet_id is not None and str(sheet_id) == gid_candidate:
+                return title, sheet_id
+
+    if normalised_title:
+        return normalised_title, None
+
+    if candidates:
+        return candidates[0]
+
+    raise SpreadsheetAccessError("Worksheet not found in spreadsheet metadata.")
+
+
+def _read_header_row(service, spreadsheet_id: str, worksheet_title: str) -> List[str]:
+    primary_range = _a1_range(worksheet_title, "1:1")
+    try:
+        payload = _values_batch_get(service, spreadsheet_id, [primary_range])
+    except HttpError:
+        fallback_range = _a1_range(worksheet_title, "A1:Z1")
+        payload = _values_batch_get(service, spreadsheet_id, [fallback_range])
+    value_ranges = payload.get("valueRanges", [])
+    if not value_ranges:
+        return []
+    rows = value_ranges[0].get("values", [])
+    if not rows:
+        return []
+    return rows[0]
+
+
+def _perform_write_check(
+    service,
+    spreadsheet_id: str,
+    worksheet_title: str,
+    account_email: str,
+) -> str:
+    test_range = _a1_range(worksheet_title, "Z1")
+    marker = f"rb-health-{int(time.time() * 1000)}"
+    original_value = ""
+    changed = False
+
+    try:
+        existing = _values_batch_get(service, spreadsheet_id, [test_range])
+        values = existing.get("valueRanges", [{}])[0].get("values", [])
+        if values and values[0]:
+            original_value = str(values[0][0])
+        data = [{"range": test_range, "values": [[marker]]}]
+        _values_batch_update(service, spreadsheet_id, data)
+        changed = True
+        confirm = _values_batch_get(service, spreadsheet_id, [test_range])
+        confirm_values = confirm.get("valueRanges", [{}])[0].get("values", [])
+        confirmed = bool(confirm_values and confirm_values[0] and confirm_values[0][0] == marker)
+    except HttpError as exc:  # pragma: no cover - network interaction
+        status = _http_status(exc)
+        if status == 403:
+            raise SheetsPermissionError(
+                f"Service account edit yetkisi yok (mail: {account_email})."
+            ) from exc
+        raise SpreadsheetAccessError(f"Sheets write failed: {exc}") from exc
+    finally:
+        if changed:
+            restore_value = original_value if original_value is not None else ""
+            try:
+                _values_batch_update(
+                    service,
+                    spreadsheet_id,
+                    [{"range": test_range, "values": [[restore_value]]}],
+                )
+            except Exception:  # pragma: no cover - best effort
+                logger.debug("Failed to restore test cell after health check", exc_info=True)
+
+    if changed and confirmed:
+        logger.info("Sheets write OK")
+        return "ok"
+    if changed:
+        return "mismatch"
+    return "skipped"
 
 
 def calc_hash(row: Mapping[str, Any]) -> str:
@@ -639,7 +770,7 @@ def _ensure_sheet_structure(
         raise SpreadsheetAccessError("Worksheet could not be found or created.")
 
     # Ensure headers present
-    header_range = f"{worksheet_title}!A1:{_column_a1(len(HEADERS) - 1)}1"
+    header_range = _a1_range(worksheet_title, f"A1:{_column_a1(len(HEADERS) - 1)}1")
     current_headers = _values_batch_get(service, spreadsheet_id, [header_range])
     values = current_headers.get("valueRanges", [{}])[0].get("values", [])
     if not values or values[0] != HEADERS:
@@ -654,8 +785,8 @@ def _ensure_sheet_structure(
             ],
         )
 
-    customer_header_range = (
-        f"{CUSTOMER_SHEET_TITLE}!A1:{_column_a1(len(CUSTOMER_HEADERS) - 1)}1"
+    customer_header_range = _a1_range(
+        CUSTOMER_SHEET_TITLE, f"A1:{_column_a1(len(CUSTOMER_HEADERS) - 1)}1"
     )
     current_customer_headers = _values_batch_get(
         service,
@@ -752,7 +883,7 @@ def _ensure_sheet_structure(
     _call_with_retry(request.execute, "spreadsheets.batchUpdate")
 
     # Ensure meta sheet headers exist
-    meta_header_range = f"{META_SHEET_TITLE}!A1:B1"
+    meta_header_range = _a1_range(META_SHEET_TITLE, "A1:B1")
     meta_current = _values_batch_get(service, spreadsheet_id, [meta_header_range])
     meta_values = meta_current.get("valueRanges", [{}])[0].get("values", [])
     if not meta_values:
@@ -768,7 +899,7 @@ def _ensure_sheet_structure(
         )
 
     # Ensure log sheet headers exist
-    log_header_range = f"{LOG_SHEET_TITLE}!A1:F1"
+    log_header_range = _a1_range(LOG_SHEET_TITLE, "A1:F1")
     log_current = _values_batch_get(service, spreadsheet_id, [log_header_range])
     log_values = log_current.get("valueRanges", [{}])[0].get("values", [])
     if not log_values:
@@ -793,7 +924,9 @@ def _sync_customers_sheet(
     *,
     log_callback: Optional[Callable[[str], None]] = None,
 ) -> int:
-    clear_range = f"{CUSTOMER_SHEET_TITLE}!A2:{_column_a1(len(CUSTOMER_HEADERS) - 1)}"
+    clear_range = _a1_range(
+        CUSTOMER_SHEET_TITLE, f"A2:{_column_a1(len(CUSTOMER_HEADERS) - 1)}"
+    )
     _values_clear(service, spreadsheet_id, clear_range)
 
     if not customers:
@@ -810,7 +943,7 @@ def _sync_customers_sheet(
             row.append("" if value is None else str(value))
         rows.append(row)
 
-    start_range = f"{CUSTOMER_SHEET_TITLE}!A2"
+    start_range = _a1_range(CUSTOMER_SHEET_TITLE, "A2")
     _values_batch_update(
         service,
         spreadsheet_id,
@@ -837,13 +970,13 @@ def _append_sync_log(
     retries: int,
 ) -> None:
     timestamp = datetime.utcnow().replace(microsecond=0).isoformat()
-    log_sheet_range = f"{LOG_SHEET_TITLE}!A:A"
+    log_sheet_range = _a1_range(LOG_SHEET_TITLE, "A:A")
     existing = _values_batch_get(service, spreadsheet_id, [log_sheet_range])
     entries = existing.get("valueRanges", [{}])[0].get("values", [])
     next_row = len(entries) + 1
     data = [
         {
-            "range": f"{LOG_SHEET_TITLE}!A{next_row}:F{next_row}",
+            "range": _a1_range(LOG_SHEET_TITLE, f"A{next_row}:F{next_row}"),
             "values": [[timestamp, direction, action, str(rows), f"{duration:.3f}", str(retries)]],
         }
     ]
@@ -855,7 +988,7 @@ def _read_remote_rows(
     spreadsheet_id: str,
     worksheet_title: str,
 ) -> List[SheetRow]:
-    range_a1 = f"{worksheet_title}!A1:{_column_a1(len(HEADERS) - 1)}"
+    range_a1 = _a1_range(worksheet_title, f"A1:{_column_a1(len(HEADERS) - 1)}")
     payload = _values_batch_get(service, spreadsheet_id, [range_a1])
     value_ranges = payload.get("valueRanges", [])
     rows: List[SheetRow] = []
@@ -886,7 +1019,7 @@ def _write_remote_meta(
 ) -> None:
     if not updates:
         return
-    existing = _values_batch_get(service, spreadsheet_id, [f"{META_SHEET_TITLE}!A:B"])
+    existing = _values_batch_get(service, spreadsheet_id, [_a1_range(META_SHEET_TITLE, "A:B")])
     rows = existing.get("valueRanges", [{}])[0].get("values", [])
     meta_map: Dict[str, str] = {}
     for row in rows[1:]:
@@ -901,10 +1034,7 @@ def _write_remote_meta(
         if key not in META_KEYS:
             ordered.append([key, value])
     data = [
-        {
-            "range": f"{META_SHEET_TITLE}!A1:B{len(ordered)}",
-            "values": ordered,
-        }
+        {"range": _a1_range(META_SHEET_TITLE, f"A1:B{len(ordered)}"), "values": ordered}
     ]
     _values_batch_update(service, spreadsheet_id, data)
 
@@ -1077,7 +1207,7 @@ def _flush_outbox(
                 hash=row.hash,
                 row_index=target_index,
             )
-        a1_range = f"{worksheet_title}!{_sheet_range(target_index)}"
+        a1_range = _a1_range(worksheet_title, _sheet_range(target_index))
         _values_batch_update(
             service,
             parsed_id,
@@ -1184,7 +1314,7 @@ def push(
         for batch in batches:
             data = []
             for row_index, row in batch:
-                a1_range = f"{worksheet_title}!{_sheet_range(row_index)}"
+                a1_range = _a1_range(worksheet_title, _sheet_range(row_index))
                 data.append({"range": a1_range, "values": [row.as_list()]})
             try:
                 _, retries = _values_batch_update(service, parsed_id, data)
@@ -1208,7 +1338,7 @@ def push(
                 row.row_index = next_row_index
                 data.append(
                     {
-                        "range": f"{worksheet_title}!{_sheet_range(next_row_index)}",
+                        "range": _a1_range(worksheet_title, _sheet_range(next_row_index)),
                         "values": [row.as_list()],
                     }
                 )
@@ -1354,7 +1484,7 @@ def latest_remote_updated_at(
     except ValueError:
         return None
     column = _column_a1(updated_index)
-    range_spec = f"{worksheet_title}!{column}2:{column}"
+    range_spec = _a1_range(worksheet_title, f"{column}2:{column}")
 
     response = (
         service.spreadsheets()
@@ -1381,6 +1511,8 @@ def health_check(
     credential_path: str,
     *,
     worksheet_title: str = DEFAULT_WORKSHEET_TITLE,
+    sheet_gid: str = "",
+    service_account_email: str = "",
 ) -> Dict[str, Any]:
     """Execute a series of health checks returning a summary report."""
 
@@ -1388,19 +1520,62 @@ def health_check(
     if not parsed_id:
         raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
-    service = get_client(credential_path)
-    worksheet_id = _ensure_sheet_structure(service, parsed_id, worksheet_title)
-    report = {
-        "worksheet_id": worksheet_id,
-        "headers": True,
-        "meta": True,
-        "logs": True,
-    }
+    path = Path(os.path.expanduser(credential_path)).resolve()
+    if not path.exists():
+        raise CredentialsFileNotFoundError(f"Credentials file not found: {path}")
+
+    payload = ensure_service_account_file(path)
+    raw_email = payload.get("client_email")
+    if isinstance(raw_email, str) and raw_email.strip():
+        account_email = raw_email.strip()
+    elif service_account_email and service_account_email.strip():
+        account_email = service_account_email.strip()
+    else:
+        account_email = ""
+
+    service = get_client(credential_path, payload)
+
     try:
-        remote_rows = _read_remote_rows(service, parsed_id, worksheet_title)
+        metadata = _spreadsheet_get(service, parsed_id)
+    except HttpError as exc:  # pragma: no cover - network interaction
+        status = _http_status(exc)
+        if status == 403:
+            raise SheetsPermissionError(
+                f"Service account edit yetkisi yok (mail: {account_email})."
+            ) from exc
+        raise SpreadsheetAccessError(f"Sheets read failed: {exc}") from exc
+
+    resolved_title, resolved_id = _resolve_worksheet(metadata, worksheet_title, sheet_gid)
+    worksheet_id = _ensure_sheet_structure(service, parsed_id, resolved_title)
+    if worksheet_id is None and resolved_id is not None:
+        worksheet_id = resolved_id
+
+    header_row = _read_header_row(service, parsed_id, resolved_title)
+
+    try:
+        remote_rows = _read_remote_rows(service, parsed_id, resolved_title)
     except HttpError as exc:  # pragma: no cover - network interaction
         raise SpreadsheetAccessError(f"Sheets read failed: {exc}") from exc
-    report["row_count"] = len(remote_rows)
+
+    write_result = _perform_write_check(service, parsed_id, resolved_title, account_email or service_account_email)
+
+    report = {
+        "worksheet_id": worksheet_id,
+        "headers": bool(header_row),
+        "row_count": len(remote_rows),
+        "resolved_title": resolved_title,
+        "write_check": write_result,
+    }
+
+    logger.info(
+        "Health check: headers=%s row_count=%s worksheet_id=%s resolved_title=%s write_check=%s",
+        report["headers"],
+        report["row_count"],
+        report["worksheet_id"],
+        report["resolved_title"],
+        report["write_check"],
+    )
+
     return report
 
 
@@ -1432,5 +1607,6 @@ __all__ = [
     "CredentialsFileNotFoundError",
     "CredentialsFileInvalidError",
     "SpreadsheetAccessError",
+    "SheetsPermissionError",
     "latest_remote_updated_at",
 ]

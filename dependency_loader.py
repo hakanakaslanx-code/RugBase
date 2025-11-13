@@ -173,7 +173,7 @@ def vendor_path() -> Optional[Path]:
     return _vendor_path
 
 
-def default_credentials_path(filename: str = "credentials.json") -> Optional[Path]:
+def default_credentials_path(filename: str = "service_account.json") -> Optional[Path]:
     """Return the default credentials file bundled with the application."""
 
     root = runtime_root()

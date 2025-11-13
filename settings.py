@@ -22,8 +22,8 @@ DEFAULT_SPREADSHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
 DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
 DEFAULT_WORKSHEET_TITLE = "items"
 SYNC_SETTINGS_PATH = db.data_path("sync_settings.json")
-_CREDENTIALS_TARGET = app_paths.credentials_path("credentials.json")
-_BUNDLED_CREDENTIALS = dependency_loader.default_credentials_path("credentials.json")
+_CREDENTIALS_TARGET = app_paths.credentials_path("service_account.json")
+_BUNDLED_CREDENTIALS = dependency_loader.default_credentials_path("service_account.json")
 if _BUNDLED_CREDENTIALS is not None and not _CREDENTIALS_TARGET.exists():
     try:
         shutil.copy2(_BUNDLED_CREDENTIALS, _CREDENTIALS_TARGET)
@@ -127,6 +127,7 @@ class GoogleSyncSettings:
     credential_path: str
     service_account_email: str = DEFAULT_SERVICE_ACCOUNT_EMAIL
     worksheet_title: str = DEFAULT_WORKSHEET_TITLE
+    sheet_gid: str = ""
     column_mapping: List[ColumnMapping] = field(default_factory=list)
     minute_limit: int = 1
     sync_interval_seconds: int = 60
@@ -143,6 +144,7 @@ class GoogleSyncSettings:
             "credential_path": self.credential_path,
             "service_account_email": self.service_account_email,
             "worksheet_title": self.worksheet_title,
+            "sheet_gid": self.sheet_gid,
             "minute_limit": self.minute_limit,
             "sync_interval_seconds": self.sync_interval_seconds,
             "column_mapping": [{"field": entry.field, "header": entry.header} for entry in self.column_mapping],
@@ -211,6 +213,7 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, object]:
         "credential_path": DEFAULT_CREDENTIALS_PATH,
         "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
         "worksheet_title": DEFAULT_WORKSHEET_TITLE,
+        "sheet_gid": "",
         "minute_limit": 1,
         "sync_interval_seconds": 60,
         "column_mapping": [],
@@ -261,6 +264,7 @@ def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSetti
         credential_path=str(data.get("credential_path", DEFAULT_CREDENTIALS_PATH)),
         service_account_email=str(data.get("service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL)),
         worksheet_title=str(data.get("worksheet_title", DEFAULT_WORKSHEET_TITLE)),
+        sheet_gid=str(data.get("sheet_gid", "")),
         column_mapping=mapping_entries,
         minute_limit=int(data.get("minute_limit", 1)),
         sync_interval_seconds=int(data.get("sync_interval_seconds", 60)),
