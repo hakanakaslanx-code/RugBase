@@ -47,11 +47,12 @@ class _FakeService:
 
     # Internal helpers -------------------------------------------------
     def _handle_get(self, range_spec: str) -> Dict[str, Any]:
-        if range_spec.endswith("1:1"):
+        _sheet, cell_range = self._split_range(range_spec)
+        if cell_range == "1:1":
             header = self.sheet_rows[0:1]
             return {"values": header}
 
-        match = re.match(rf"{sheets_gateway.SHEET_NAME}![A-Z]+(\d+):[A-Z]+", range_spec)
+        match = re.match(r"[A-Z]+(\d+):[A-Z]+(\d+)", cell_range)
         if not match:
             return {"values": []}
         start = int(match.group(1)) - 1
@@ -67,7 +68,8 @@ class _FakeService:
         parsed_updates: List[tuple[int, List[List[Any]]]] = []
         for entry in ranges:
             range_spec = entry.get("range", "")
-            match = re.match(rf"{sheets_gateway.SHEET_NAME}!([A-Z]+)(\d+):([A-Z]+)(\d+)", range_spec)
+            _sheet, cell_range = self._split_range(range_spec)
+            match = re.match(r"([A-Z]+)(\d+):([A-Z]+)(\d+)", cell_range)
             if not match:
                 continue
             start_row = int(match.group(2)) - 1
@@ -94,6 +96,16 @@ class _FakeService:
 
         self.sheet_rows = new_matrix
         return {}
+
+    @staticmethod
+    def _split_range(range_spec: str) -> tuple[str, str]:
+        if "!" not in range_spec:
+            return "", range_spec
+        sheet, cell_range = range_spec.split("!", 1)
+        sheet = sheet.strip()
+        if sheet.startswith("'") and sheet.endswith("'") and len(sheet) >= 2:
+            sheet = sheet[1:-1].replace("''", "'")
+        return sheet, cell_range
 
 
 def _row(**overrides: Any) -> Dict[str, Any]:

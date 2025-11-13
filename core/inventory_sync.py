@@ -11,7 +11,11 @@ from typing import Callable, Dict, Iterable, List, Mapping, Optional
 
 import db
 from core import sheets_gateway
-from settings import GoogleSyncSettings, load_google_sync_settings
+from settings import (
+    DEFAULT_WORKSHEET_TITLE,
+    GoogleSyncSettings,
+    load_google_sync_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +197,12 @@ class InventorySyncManager:
 
         conflicts: List[str] = []
 
+        worksheet_title = self._resolve_worksheet_title(settings)
+
         try:
-            self._push_pending(service, spreadsheet_id)
+            self._push_pending(service, spreadsheet_id, worksheet_title)
             if force_pull or self._online or self._pending == 0:
-                conflicts = self._pull_remote(service, spreadsheet_id)
+                conflicts = self._pull_remote(service, spreadsheet_id, worksheet_title)
         except Exception as exc:
             logger.warning("Sheets sync cycle failed: %s", exc)
             self._set_offline(str(exc))
@@ -258,7 +264,13 @@ class InventorySyncManager:
     # ------------------------------------------------------------------
     # Remote interactions
     # ------------------------------------------------------------------
-    def _push_pending(self, service, spreadsheet_id: str) -> None:
+    def _resolve_worksheet_title(self, settings: GoogleSyncSettings) -> str:
+        title = (settings.worksheet_title or "").strip()
+        if not title:
+            return DEFAULT_WORKSHEET_TITLE
+        return title
+
+    def _push_pending(self, service, spreadsheet_id: str, worksheet_title: str) -> None:
         backoff_schedule = [1, 2, 4, 8, 16]
         while True:
             jobs = db.fetch_sync_queue(limit=200)
@@ -300,7 +312,12 @@ class InventorySyncManager:
             rows = list(merged.values())
             for attempt, delay in enumerate(backoff_schedule, start=1):
                 try:
-                    sheets_gateway.upsert_rows(rows, service=service, spreadsheet_id=spreadsheet_id)
+                    sheets_gateway.upsert_rows(
+                        rows,
+                        service=service,
+                        spreadsheet_id=spreadsheet_id,
+                        worksheet_title=worksheet_title,
+                    )
                 except Exception as exc:
                     if attempt == len(backoff_schedule):
                         for job_id in job_ids:
@@ -315,9 +332,13 @@ class InventorySyncManager:
 
             self._pending = db.count_sync_queue()
 
-    def _pull_remote(self, service, spreadsheet_id: str) -> List[str]:
+    def _pull_remote(self, service, spreadsheet_id: str, worksheet_title: str) -> List[str]:
         conflicts: List[str] = []
-        rows = sheets_gateway.get_rows(service=service, spreadsheet_id=spreadsheet_id)
+        rows = sheets_gateway.get_rows(
+            service=service,
+            spreadsheet_id=spreadsheet_id,
+            worksheet_title=worksheet_title,
+        )
         for row in rows:
             conflict = self._apply_remote_row(row)
             if conflict:
