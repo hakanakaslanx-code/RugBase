@@ -157,6 +157,13 @@ def _column_letter(index: int) -> str:
     return "".join(reversed(letters))
 
 
+def _a1_range(worksheet_title: str, range_spec: str) -> str:
+    title = worksheet_title or SHEET_NAME
+    if "'" in title:
+        title = title.replace("'", "''")
+    return f"'{title}'!{range_spec}"
+
+
 def _normalise_headers(existing: Sequence[str]) -> List[str]:
     extras: List[str] = []
     seen = set()
@@ -269,11 +276,11 @@ def _coerce_for_sheet(header: str, value: Any) -> Any:
     return value
 
 
-def _ensure_header_row(service, spreadsheet_id: str) -> List[str]:
+def _ensure_header_row(service, spreadsheet_id: str, worksheet_title: str = SHEET_NAME) -> List[str]:
     request = (
         service.spreadsheets()
         .values()
-        .get(spreadsheetId=spreadsheet_id, range=f"{SHEET_NAME}!1:1")
+        .get(spreadsheetId=spreadsheet_id, range=_a1_range(worksheet_title, "1:1"))
     )
     result = request.execute()
     existing = result.get("values", []) if isinstance(result, dict) else []
@@ -282,7 +289,7 @@ def _ensure_header_row(service, spreadsheet_id: str) -> List[str]:
 
     if header_row != headers:
         value_range = {
-            "range": f"{SHEET_NAME}!A1:{_column_letter(len(headers))}1",
+            "range": _a1_range(worksheet_title, f"A1:{_column_letter(len(headers))}1"),
             "values": [list(headers)],
         }
         (
@@ -297,7 +304,12 @@ def _ensure_header_row(service, spreadsheet_id: str) -> List[str]:
     return headers
 
 
-def _fetch_values(service, spreadsheet_id: str, headers: Sequence[str]) -> List[List[Any]]:
+def _fetch_values(
+    service,
+    spreadsheet_id: str,
+    headers: Sequence[str],
+    worksheet_title: str = SHEET_NAME,
+) -> List[List[Any]]:
     end_column = _column_letter(len(headers))
     rows: List[List[Any]] = []
     start_row = 2
@@ -308,7 +320,7 @@ def _fetch_values(service, spreadsheet_id: str, headers: Sequence[str]) -> List[
             .values()
             .get(
                 spreadsheetId=spreadsheet_id,
-                range=f"{SHEET_NAME}!A{start_row}:{end_column}{end_row}",
+                range=_a1_range(worksheet_title, f"A{start_row}:{end_column}{end_row}"),
             )
         )
         result = request.execute()
@@ -376,7 +388,13 @@ def _chunk_rows(
         yield start, [list(row) for row in matrix[start : start + rows_per_chunk]]
 
 
-def _write_sheet(service, spreadsheet_id: str, headers: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> None:
+def _write_sheet(
+    service,
+    spreadsheet_id: str,
+    headers: Sequence[str],
+    rows: Sequence[Mapping[str, Any]],
+    worksheet_title: str = SHEET_NAME,
+) -> None:
     matrix = [list(headers)] + _format_rows_for_sheet(headers, rows)
     end_column = _column_letter(len(headers))
     data: List[Dict[str, Any]] = []
@@ -385,7 +403,7 @@ def _write_sheet(service, spreadsheet_id: str, headers: Sequence[str], rows: Seq
         end_row = start_row + len(chunk) - 1
         data.append(
             {
-                "range": f"{SHEET_NAME}!A{start_row}:{end_column}{end_row}",
+                "range": _a1_range(worksheet_title, f"A{start_row}:{end_column}{end_row}"),
                 "values": chunk,
             }
         )
@@ -393,7 +411,7 @@ def _write_sheet(service, spreadsheet_id: str, headers: Sequence[str], rows: Seq
     if not data:
         data.append(
             {
-                "range": f"{SHEET_NAME}!A1:{end_column}1",
+                "range": _a1_range(worksheet_title, f"A1:{end_column}1"),
                 "values": [list(headers)],
             }
         )
@@ -409,13 +427,18 @@ def _write_sheet(service, spreadsheet_id: str, headers: Sequence[str], rows: Seq
     )
 
 
-def get_rows(service=None, spreadsheet_id: str = SHEET_ID) -> List[Dict[str, Any]]:
+def get_rows(
+    service=None,
+    spreadsheet_id: str = SHEET_ID,
+    *,
+    worksheet_title: str = SHEET_NAME,
+) -> List[Dict[str, Any]]:
     """Return all rows from the inventory sheet with type conversion applied."""
 
     if service is None:
         service = _build_service()
-    headers = _ensure_header_row(service, spreadsheet_id)
-    values = _fetch_values(service, spreadsheet_id, headers)
+    headers = _ensure_header_row(service, spreadsheet_id, worksheet_title)
+    values = _fetch_values(service, spreadsheet_id, headers, worksheet_title)
     return _rows_from_values(headers, values)
 
 
@@ -424,6 +447,7 @@ def upsert_rows(
     *,
     service=None,
     spreadsheet_id: str = SHEET_ID,
+    worksheet_title: str = SHEET_NAME,
 ) -> None:
     """Insert or update rows on the inventory sheet."""
 
@@ -431,8 +455,8 @@ def upsert_rows(
         return
     if service is None:
         service = _build_service()
-    headers = _ensure_header_row(service, spreadsheet_id)
-    existing_values = _fetch_values(service, spreadsheet_id, headers)
+    headers = _ensure_header_row(service, spreadsheet_id, worksheet_title)
+    existing_values = _fetch_values(service, spreadsheet_id, headers, worksheet_title)
     current_rows = _rows_from_values(headers, existing_values)
     current_rows, index = _index_rows(current_rows)
 
@@ -455,7 +479,7 @@ def upsert_rows(
                 continue
             index[(other_key, str(other_value))] = position
 
-    _write_sheet(service, spreadsheet_id, headers, current_rows)
+    _write_sheet(service, spreadsheet_id, headers, current_rows, worksheet_title)
 
 
 def delete_rows(
@@ -463,6 +487,7 @@ def delete_rows(
     *,
     service=None,
     spreadsheet_id: str = SHEET_ID,
+    worksheet_title: str = SHEET_NAME,
 ) -> None:
     """Remove rows identified by RugNo or SKU from the worksheet."""
 
@@ -471,8 +496,8 @@ def delete_rows(
         return
     if service is None:
         service = _build_service()
-    headers = _ensure_header_row(service, spreadsheet_id)
-    existing_values = _fetch_values(service, spreadsheet_id, headers)
+    headers = _ensure_header_row(service, spreadsheet_id, worksheet_title)
+    existing_values = _fetch_values(service, spreadsheet_id, headers, worksheet_title)
     current_rows = _rows_from_values(headers, existing_values)
 
     filtered: List[Dict[str, Any]] = []
@@ -482,7 +507,7 @@ def delete_rows(
             continue
         filtered.append(row)
 
-    _write_sheet(service, spreadsheet_id, headers, filtered)
+    _write_sheet(service, spreadsheet_id, headers, filtered, worksheet_title)
 
 
 __all__ = [
