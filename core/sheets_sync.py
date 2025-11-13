@@ -1001,7 +1001,7 @@ def _read_remote_rows(
     spreadsheet_id: str,
     worksheet_title: str,
 ) -> List[SheetRow]:
-    range_a1 = _a1_range(worksheet_title, f"A1:{_column_a1(len(HEADERS) - 1)}")
+    range_a1 = _a1_range(worksheet_title, f"A:{_column_a1(len(HEADERS) - 1)}")
     payload = _values_batch_get(service, spreadsheet_id, [range_a1])
     value_ranges = payload.get("valueRanges", [])
     rows: List[SheetRow] = []
