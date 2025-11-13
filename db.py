@@ -593,6 +593,35 @@ def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+def fetch_item_by_rug_no(rug_no: str) -> Optional[Dict[str, Any]]:
+    """Return the first inventory row matching ``rug_no``."""
+
+    select_fields = [
+        "item_id",
+        "rb_id",
+        *INVENTORY_CORE_FIELDS,
+        "qty",
+        "created_at",
+        "updated_at",
+        "updated_by",
+        "version",
+        "last_pushed_version",
+        "status",
+        "location",
+        "consignment_id",
+        "sold_at",
+        "customer_id",
+        "sale_price",
+        "sale_note",
+    ]
+    query = f"SELECT {', '.join(select_fields)} FROM item WHERE rug_no = ? LIMIT 1"
+
+    with get_connection() as conn:
+        cursor = conn.execute(query, (rug_no,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
 def update_item(item_data: Dict[str, Any]) -> None:
     set_clause = ", ".join(f"{field} = ?" for field in UPDATABLE_FIELDS)
     params = [item_data.get(field) for field in UPDATABLE_FIELDS]
@@ -754,6 +783,8 @@ def delete_item(item_id: str) -> None:
             (now, item_id),
         )
         conn.commit()
+
+    _notify_item_upsert(item_id)
 
 
 def _row_to_sync_payload(row: sqlite3.Row) -> Dict[str, Any]:
@@ -1133,6 +1164,13 @@ def enqueue_sync_job(rb_id: str, payload: Dict[str, Any]) -> int:
         return int(cursor.lastrowid)
 
 
+def count_sync_queue() -> int:
+    with get_connection() as conn:
+        cursor = conn.execute("SELECT COUNT(*) FROM sync_queue")
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
 def fetch_sync_queue(limit: int = 100) -> List[Dict[str, Any]]:
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
@@ -1170,6 +1208,27 @@ def increment_sync_retry(job_id: int) -> None:
         conn.execute(
             "UPDATE sync_queue SET retries = retries + 1, created_at = ? WHERE id = ?",
             (_now_iso(), job_id),
+        )
+        conn.commit()
+
+
+def mark_items_synced(updates: Mapping[str, str]) -> None:
+    if not updates:
+        return
+    with get_connection() as conn:
+        for rug_no, last_updated in updates.items():
+            conn.execute(
+                "UPDATE item SET last_pushed_version = COALESCE(version, 0), updated_at = ? WHERE rug_no = ?",
+                (last_updated, rug_no),
+            )
+        conn.commit()
+
+
+def set_item_remote_timestamp(item_id: str, timestamp: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE item SET updated_at = ?, last_pushed_version = COALESCE(version, 0) WHERE item_id = ?",
+            (timestamp, item_id),
         )
         conn.commit()
 

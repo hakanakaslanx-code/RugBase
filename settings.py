@@ -129,6 +129,7 @@ class GoogleSyncSettings:
     worksheet_title: str = DEFAULT_WORKSHEET_TITLE
     column_mapping: List[ColumnMapping] = field(default_factory=list)
     minute_limit: int = 1
+    sync_interval_seconds: int = 60
 
     def mapping_dict(self) -> Dict[str, str]:
         return {entry.field: entry.header for entry in self.column_mapping}
@@ -143,6 +144,7 @@ class GoogleSyncSettings:
             "service_account_email": self.service_account_email,
             "worksheet_title": self.worksheet_title,
             "minute_limit": self.minute_limit,
+            "sync_interval_seconds": self.sync_interval_seconds,
             "column_mapping": [{"field": entry.field, "header": entry.header} for entry in self.column_mapping],
         }
 
@@ -210,6 +212,7 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, object]:
         "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
         "worksheet_title": DEFAULT_WORKSHEET_TITLE,
         "minute_limit": 1,
+        "sync_interval_seconds": 60,
         "column_mapping": [],
     }
     if not os.path.exists(path):
@@ -230,6 +233,11 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, object]:
         elif key == "minute_limit":
             try:
                 merged[key] = max(1, min(5, int(value)))
+            except (TypeError, ValueError):
+                merged[key] = default_settings[key]
+        elif key == "sync_interval_seconds":
+            try:
+                merged[key] = max(15, min(600, int(value)))
             except (TypeError, ValueError):
                 merged[key] = default_settings[key]
         elif isinstance(value, str):
@@ -255,6 +263,7 @@ def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSetti
         worksheet_title=str(data.get("worksheet_title", DEFAULT_WORKSHEET_TITLE)),
         column_mapping=mapping_entries,
         minute_limit=int(data.get("minute_limit", 1)),
+        sync_interval_seconds=int(data.get("sync_interval_seconds", 60)),
     )
     return settings
 
