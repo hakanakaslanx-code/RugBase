@@ -124,9 +124,9 @@ from settings import DymoLabelSettings, FontSpec, load_settings
 INCH_TO_MM = 25.4
 POINTS_PER_INCH = 72
 
-# Fixed canvas dimensions for Dymo 30321 Large Address Label at 300 DPI.
-CANVAS_WIDTH_PX = 924
-CANVAS_HEIGHT_PX = 1599
+# Fixed canvas dimensions for the portrait Dymo 30336 label at 300 DPI.
+CANVAS_WIDTH_PX = 300
+CANVAS_HEIGHT_PX = 638
 
 
 @dataclass
@@ -562,70 +562,85 @@ class DymoLabelRenderer:
         )
         return image
 
+    def _clean_value(self, value: Optional[object]) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        return text
+
+    def _collection_value(self, item: Dict[str, object]) -> str:
+        for key in ("collection", "Collection", "v_collection", "VCollection"):
+            text = self._clean_value(item.get(key))
+            if text:
+                return text
+        return ""
+
+    def _barcode_value(self, item: Dict[str, object]) -> Optional[str]:
+        for key in ("rug_no", "RugNo", "roll_no", "RollNo"):
+            text = self._clean_value(item.get(key))
+            if text:
+                return text.upper()
+        return None
+
+    def _price_text(self, item: Dict[str, object]) -> Optional[str]:
+        primary = self._clean_value(item.get("sp") or item.get("SP") or item.get("price") or item.get("Price"))
+        fallback = self._clean_value(item.get("msrp") or item.get("MSRP"))
+        amount = primary or fallback
+        if not amount:
+            return None
+        return f"Price $ {amount}"
+
     def _compose_field_rows(self, item: Dict[str, object]) -> List[Tuple[str, str]]:
-        ground = (item.get("ground") or "").strip()
-        border = (item.get("border") or "").strip()
-        style = (item.get("style") or "").strip()
-        content_value = (item.get("content") or "").strip()
-        type_value = (item.get("type") or "").strip()
-        if not content_value and type_value:
-            lowered = type_value.lower()
-            if "hand" in lowered:
-                content_value = "hand made"
-            elif "machine" in lowered:
-                content_value = "machine made"
-            else:
-                content_value = type_value
-        shape_value = (item.get("shape") or "").strip()
-        actual_size = (item.get("a_size") or "").strip()
         rows: List[Tuple[str, str]] = []
-        design_value = (item.get("design") or "").strip()
+
+        design_value = self._clean_value(
+            item.get("design")
+            or item.get("Design")
+            or item.get("v_design")
+            or item.get("VDesign")
+        )
         if design_value:
             rows.append(("Design", design_value))
 
+        ground = self._clean_value(item.get("ground") or item.get("Ground"))
+        border = self._clean_value(item.get("border") or item.get("Border"))
         if ground or border:
-            if ground and border:
-                color_value = f"{ground}/{border}"
-            else:
-                color_value = ground or border
-            rows.append(("Ground / Border", color_value))
+            color_value = f"{ground}/{border}" if ground and border else ground or border
+            rows.append(("Color", color_value))
 
-        if actual_size:
-            rows.append(("Actual Size", actual_size))
+        actual_size = self._clean_value(item.get("a_size") or item.get("ASize"))
+        standard_size = self._clean_value(item.get("st_size") or item.get("StSize"))
+        size_value = ""
+        if actual_size and standard_size and actual_size.lower() != standard_size.lower():
+            size_value = f"{actual_size} / {standard_size}"
+        else:
+            size_value = actual_size or standard_size
+        if size_value:
+            rows.append(("Size", size_value))
 
-        if content_value:
-            rows.append(("Content", content_value))
-
-        origin_value = (item.get("origin") or "").strip()
+        origin_value = self._clean_value(item.get("origin") or item.get("Origin"))
         if origin_value:
             rows.append(("Origin", origin_value))
 
-        if style:
-            rows.append(("Style", style))
+        content_value = self._clean_value(item.get("content") or item.get("Content"))
+        if not content_value:
+            type_value = self._clean_value(item.get("type") or item.get("Type"))
+            if type_value:
+                lowered = type_value.lower()
+                if "hand" in lowered:
+                    content_value = "Hand Made"
+                elif "machine" in lowered:
+                    content_value = "Machine Made"
+                else:
+                    content_value = type_value
+        if content_value:
+            rows.append(("Content", content_value))
 
-        if shape_value:
-            rows.append(("Type", shape_value))
+        rug_value = self._barcode_value(item)
+        if rug_value:
+            rows.append(("Rug #", rug_value))
+
         return rows
-
-    def _msrp_line(self, item: Dict[str, object]) -> Optional[str]:
-        msrp = item.get("msrp") or item.get("MSRP")
-        if not msrp:
-            return None
-        return f"MSRP $ {str(msrp).strip()}"
-
-    def _format_price_lines(self, item: Dict[str, object]) -> List[str]:
-        lines: List[str] = []
-        price = item.get("sp") or item.get("SP")
-        if price:
-            lines.append(f"Price $ {str(price).strip()}")
-        return lines
-
-    def _sku_value(self, item: Dict[str, object]) -> Optional[str]:
-        for key in ("sku", "SKU", "upc", "UPC"):
-            value = item.get(key)
-            if value:
-                return str(value).strip()
-        return None
 
     def render(self, item: Dict[str, object]) -> RenderResult:
         if not PIL_AVAILABLE:
@@ -649,49 +664,26 @@ class DymoLabelRenderer:
 
         narrow_bar_px = self._mm_to_px(barcode_spec.narrow_bar_mm)
         module_px = max(1, narrow_bar_px)
-        quiet_zone_px = max(self._mm_to_px(barcode_spec.quiet_zone_mm), module_px * 10)
+        quiet_zone_px = max(self._mm_to_px(barcode_spec.quiet_zone_mm), module_px * 6)
         barcode_height_px = self._mm_to_px(barcode_spec.height_mm)
+        barcode_gap_px = self._mm_to_px(barcode_spec.text_gap_mm)
+        field_gap_px = self._mm_to_px(layout_spec.field_gap_mm)
+        collection_gap_px = self._mm_to_px(layout_spec.collection_gap_mm)
+        label_spacing_px = max(1, self._mm_to_px(0.8))
+        section_gap_px = self._mm_to_px(layout_spec.section_gap_mm)
+
         barcode = Code128(module_px)
 
-        text_padding_px = max(1, self._mm_to_px(layout_spec.section_gap_mm) // 2)
-        barcode_text_gap_px = self._mm_to_px(barcode_spec.text_gap_mm)
+        price_font_spec = self.settings.fonts.get("price")
+        price_font, warn = self._load_font(price_font_spec) if price_font_spec else (ImageFont.load_default(), None)
+        if warn:
+            warnings.append(warn)
 
-        sku_value = self._sku_value(item)
-        sku_font: Any = ImageFont.load_default()
-        sku_text: Optional[str] = None
-        sku_text_height = 0
-        if sku_value:
-            sku_spec = self.settings.fonts.get("sku")
-            sku_font, warn = self._load_font(sku_spec) if sku_spec else (ImageFont.load_default(), None)
-            if warn:
-                warnings.append(warn)
-            sku_text = f"SKU {sku_value}"
-            _, sku_text_height = measure_text(draw, sku_text, sku_font)
+        collection_spec = self.settings.fonts.get("collection")
+        collection_font, warn = self._load_font(collection_spec) if collection_spec else (ImageFont.load_default(), None)
+        if warn:
+            warnings.append(warn)
 
-        rug_no = (item.get("rug_no") or "").strip().upper()
-        barcode_text: Optional[str] = None
-        if not rug_no:
-            warnings.append("Rug # is empty. Barcode generation was skipped.")
-        else:
-            try:
-                widths = barcode.encode(rug_no)
-            except ValueError as exc:
-                warnings.append(f"Barcode could not be created: {exc}")
-            else:
-                barcode_text = f"Rug # {rug_no}"
-                pattern_width = Code128.measure(widths)
-                total_barcode_width = pattern_width + quiet_zone_px * 2
-                extra_space = max(0, content_width - total_barcode_width)
-                start_x = margin_left + (extra_space // 2) + quiet_zone_px
-                start_y = margin_top
-                barcode.draw(draw, (start_x, start_y), barcode_height_px, widths)
-
-        reserved_for_sku = sku_text_height + (text_padding_px if sku_value else 0)
-        text_area_bottom_limit = height_px - margin_bottom - text_padding_px - reserved_for_sku
-        current_y = margin_top + barcode_height_px
-        barcode_label_y = current_y + barcode_text_gap_px
-
-        field_rows = self._compose_field_rows(item)
         label_font_spec = self.settings.fonts.get("field_label")
         value_font_spec = self.settings.fonts.get("field_value")
         label_font, warn = self._load_font(label_font_spec) if label_font_spec else (ImageFont.load_default(), None)
@@ -701,137 +693,90 @@ class DymoLabelRenderer:
         if warn:
             warnings.append(warn)
 
-        barcode_font_spec = self.settings.fonts.get("barcode_text")
-        if barcode_font_spec:
-            barcode_font, warn = self._load_font(barcode_font_spec)
-            if warn:
-                warnings.append(warn)
-        else:
-            barcode_font = value_font
+        current_y = margin_top
 
-        msrp_line = self._msrp_line(item)
-        price_lines = self._format_price_lines(item)
-
-        price_font_spec = self.settings.fonts.get("price")
-        if price_font_spec:
-            price_font, warn = self._load_font(price_font_spec)
-            if warn:
-                warnings.append(warn)
-        else:
-            price_font = ImageFont.load_default()
-
-        msrp_font_spec = self.settings.fonts.get("msrp")
-        if msrp_font_spec:
-            msrp_font, warn = self._load_font(msrp_font_spec)
-            if warn:
-                warnings.append(warn)
-        else:
-            msrp_font = price_font
-
-        label_y = barcode_label_y
-        if msrp_line:
-            msrp_text_width, msrp_text_height = measure_text(draw, msrp_line, msrp_font)
+        price_text = self._price_text(item)
+        if price_text:
+            price_width, price_height = measure_text(draw, price_text, price_font)
             draw.text(
                 (
-                    margin_left + (content_width - msrp_text_width) / 2,
-                    label_y,
+                    margin_left + (content_width - price_width) / 2,
+                    current_y,
                 ),
-                msrp_line,
+                price_text,
                 fill=0,
-                font=msrp_font,
+                font=price_font,
             )
-            label_y += msrp_text_height + text_padding_px
-
-        if barcode_text:
-            barcode_text_width, barcode_text_height = measure_text(draw, barcode_text, barcode_font)
-            draw.text(
-                (
-                    margin_left + (content_width - barcode_text_width) / 2,
-                    label_y,
-                ),
-                barcode_text,
-                fill=0,
-                font=barcode_font,
-            )
-            label_y += barcode_text_height + text_padding_px
-
-        if msrp_line or barcode_text:
-            current_y = label_y
+            current_y += price_height + barcode_gap_px
         else:
-            current_y = barcode_label_y + text_padding_px
+            warnings.append("Price value is missing; price line omitted from label.")
 
-        if text_area_bottom_limit < current_y:
-            text_area_bottom_limit = current_y
-
-        collection_spec = self.settings.fonts.get("collection")
-        if collection_spec:
-            collection_font, warn = self._load_font(collection_spec)
-            if warn:
-                warnings.append(warn)
+        barcode_value = self._barcode_value(item)
+        if barcode_value:
+            try:
+                widths = barcode.encode(barcode_value)
+            except ValueError as exc:
+                warnings.append(f"Barcode could not be created: {exc}")
+            else:
+                pattern_width = Code128.measure(widths)
+                total_width = pattern_width + quiet_zone_px * 2
+                extra_space = content_width - total_width
+                if extra_space < 0:
+                    warnings.append(
+                        "Barcode width exceeds printable area; it will extend into the margins."
+                    )
+                    extra_space = 0
+                start_x = margin_left + (extra_space // 2) + quiet_zone_px
+                start_y = current_y
+                barcode.draw(draw, (start_x, start_y), barcode_height_px, widths)
+                current_y += barcode_height_px + section_gap_px
         else:
-            collection_font = ImageFont.load_default()
-        collection_value = (item.get("collection") or "").strip()
+            warnings.append("Rug # is empty. Barcode generation was skipped.")
+
+        collection_value = self._collection_value(item)
         if collection_value:
-            text = f"{collection_value.lower()} collection"
-            text_width, text_height = measure_text(draw, text, collection_font)
+            text_width, text_height = measure_text(draw, collection_value, collection_font)
             draw.text(
                 (
                     margin_left + (content_width - text_width) / 2,
                     current_y,
                 ),
-                text,
+                collection_value,
                 fill=0,
                 font=collection_font,
             )
-            current_y += text_height + self._mm_to_px(layout_spec.collection_gap_mm)
+            current_y += text_height + collection_gap_px
 
-        if text_area_bottom_limit < current_y:
-            text_area_bottom_limit = current_y
-
-        column_spacing = self._mm_to_px(layout_spec.column_spacing_mm)
-        max_label_width = 0
-        for label, _ in field_rows:
-            width, _ = measure_text(draw, f"{label}:", label_font)
-            max_label_width = max(max_label_width, width)
-        value_x = margin_left + max_label_width + self._mm_to_px(2)
-        column_break = margin_left + content_width / 2 + column_spacing / 2
-        right_column_x = max(column_break, value_x + self._mm_to_px(5))
-
-        rows_per_column = math.ceil(len(field_rows) / 2) if len(field_rows) > 6 else len(field_rows)
-        left_rows = field_rows[:rows_per_column]
-        right_rows = field_rows[rows_per_column:]
-
-        def draw_rows(rows: Sequence[Tuple[str, str]], start_x: int, baseline_y: int) -> int:
-            y_pos = baseline_y
-            for label, value in rows:
-                label_text = f"{label}:"
-                draw.text((start_x, y_pos), label_text, fill=0, font=label_font)
+        field_rows = self._compose_field_rows(item)
+        if field_rows:
+            max_label_width = 0
+            max_value_width = 0
+            label_metrics: List[Tuple[int, int]] = []
+            value_metrics: List[Tuple[int, int]] = []
+            for label, value in field_rows:
+                label_text = f"{label} :"
                 lw, lh = measure_text(draw, label_text, label_font)
-                draw.text((start_x + max_label_width + self._mm_to_px(2), y_pos), value, fill=0, font=value_font)
-                _, vh = measure_text(draw, value, value_font)
+                vw, vh = measure_text(draw, value, value_font)
+                label_metrics.append((lw, lh))
+                value_metrics.append((vw, vh))
+                max_label_width = max(max_label_width, lw)
+                max_value_width = max(max_value_width, vw)
+
+            block_width = max_label_width + label_spacing_px + max_value_width
+            start_x = margin_left + max(0, (content_width - block_width) // 2)
+
+            for index, (label, value) in enumerate(field_rows):
+                label_text = f"{label} :"
+                lw, lh = label_metrics[index]
+                vw, vh = value_metrics[index]
+                draw.text((start_x, current_y), label_text, fill=0, font=label_font)
+                draw.text((start_x + max_label_width + label_spacing_px, current_y), value, fill=0, font=value_font)
                 row_height = max(lh, vh)
-                y_pos += row_height + self._mm_to_px(layout_spec.field_gap_mm)
-            return y_pos
+                current_y += row_height
+                if index != len(field_rows) - 1:
+                    current_y += field_gap_px
 
-        left_end = draw_rows(left_rows, margin_left, current_y)
-        right_start_y = current_y
-        right_end = draw_rows(right_rows, int(right_column_x), right_start_y)
-        current_y = max(left_end, right_end)
-
-        current_y += self._mm_to_px(layout_spec.section_gap_mm)
-
-        for index, line in enumerate(price_lines):
-            font = msrp_font if line.startswith("MSRP") else price_font
-            tw, th = measure_text(draw, line, font)
-            draw.text((margin_left + (content_width - tw) / 2, current_y), line, fill=0, font=font)
-            current_y += th + self._mm_to_px(layout_spec.field_gap_mm)
-
-        text_block_bottom = min(current_y, text_area_bottom_limit)
-
-        if sku_text:
-            base_position = height_px - margin_bottom - text_padding_px - sku_text_height
-            y_position = max(text_block_bottom + text_padding_px, base_position)
-            draw.text((margin_left, y_position), sku_text, fill=0, font=sku_font)
+        current_y = min(current_y, height_px - margin_bottom)
 
         return RenderResult(image=image, warnings=warnings)
 
