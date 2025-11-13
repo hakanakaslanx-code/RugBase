@@ -31,6 +31,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
+from core.google_credentials import ensure_service_account_file
+
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency
@@ -109,7 +111,7 @@ def _default_credentials_path() -> Path:
             username = getpass.getuser()
         except Exception:  # pragma: no cover - platform dependent fallback
             username = ""
-    path = Path(f"C:/Users/{username}/AppData/Local/RugBase/service_account.json")
+    path = Path(f"C:/Users/{username}/AppData/Local/RugBase/credentials/service_account.json")
     return path
 
 
@@ -124,7 +126,8 @@ def _load_credentials(path: Optional[Path] = None):
         raise CredentialsNotFoundError(str(credentials_path))
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    return service_account.Credentials.from_service_account_file(str(credentials_path), scopes=scopes)
+    payload = ensure_service_account_file(credentials_path)
+    return service_account.Credentials.from_service_account_info(payload, scopes=scopes)
 
 
 def _build_service(credentials=None):

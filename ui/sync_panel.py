@@ -1,9 +1,9 @@
 """Tkinter control panel for Google Sheets synchronisation."""
 from __future__ import annotations
 
+import json
 import os
 import queue
-import shutil
 import subprocess
 import sys
 import threading
@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from core import sheets_sync
+from core.google_credentials import CredentialsFileInvalidError, load_service_account_data
 from core.auto_sync import AutoSyncController
 from dependency_loader import dependency_warning
 from settings import (
@@ -240,6 +241,8 @@ class SyncPanel(ttk.Frame):
             title = DEFAULT_WORKSHEET_TITLE
         if title != self.worksheet_var.get():
             self.worksheet_var.set(title)
+        if title != (self._settings.worksheet_title or ""):
+            self._settings.sheet_gid = ""
         self._persist_settings()
 
     def _on_choose_credentials(self) -> None:
@@ -250,23 +253,46 @@ class SyncPanel(ttk.Frame):
         if not file_path:
             return
 
-        target_path = Path(DEFAULT_CREDENTIALS_PATH)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copy2(file_path, target_path)
-        except OSError as exc:
+            payload = load_service_account_data(Path(file_path))
+        except CredentialsFileInvalidError as exc:
             messagebox.showerror(
                 "Credentials File",
-                f"Credentials file could not be copied: {exc}",
+                f"CredentialsFileInvalidError: {exc}",
                 parent=self.winfo_toplevel(),
             )
             return
+        except Exception as exc:  # pragma: no cover - file access guard
+            messagebox.showerror(
+                "Credentials File",
+                f"Credentials file could not be read: {exc}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        target_path = Path(DEFAULT_CREDENTIALS_PATH)
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with target_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+        except OSError as exc:
+            messagebox.showerror(
+                "Credentials File",
+                f"Credentials file could not be saved: {exc}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        client_email = payload.get("client_email")
+        if isinstance(client_email, str) and client_email.strip():
+            self.service_email_var.set(client_email.strip())
+            self._settings.service_account_email = client_email.strip()
 
         self.credentials_path_var.set(str(target_path))
         self._settings.credential_path = str(target_path)
         self._persist_settings()
         self._update_credentials_state()
-        self._append_log(f"Credentials file copied to {target_path}.")
+        self._append_log(f"Credentials file saved to {target_path}.")
         self._update_button_states()
 
     def _on_full_push(self) -> None:
@@ -314,7 +340,13 @@ class SyncPanel(ttk.Frame):
     def _handle_task_error(self, label: str, error: Exception) -> None:
         self._busy_task = None
         self._update_button_states()
-        self._append_log(f"Task {label} failed: {error}")
+        prefix = error.__class__.__name__
+        message = str(error)
+        if message and not message.startswith(prefix):
+            message = f"{prefix}: {message}"
+        elif not message:
+            message = prefix
+        self._append_log(f"Task {label} failed: {message}")
 
     def _handle_task_result(self, label: str, result: Optional[object]) -> None:
         self._busy_task = None
@@ -331,6 +363,14 @@ class SyncPanel(ttk.Frame):
                     f"{result.get('applied', 0)} rows applied (total {result.get('total_remote', 0)})."
                 )
             elif label == "health":
+                resolved_title = result.get("resolved_title")
+                if isinstance(resolved_title, str) and resolved_title:
+                    self.worksheet_var.set(resolved_title)
+                    self._settings.worksheet_title = resolved_title
+                worksheet_id = result.get("worksheet_id")
+                if worksheet_id is not None:
+                    self._settings.sheet_gid = str(worksheet_id)
+                self._persist_settings()
                 details = ", ".join(
                     f"{key}={value}" for key, value in sorted(result.items())
                 )
@@ -365,6 +405,8 @@ class SyncPanel(ttk.Frame):
             settings.spreadsheet_id,
             settings.credential_path,
             worksheet_title=settings.worksheet_title,
+            sheet_gid=settings.sheet_gid,
+            service_account_email=settings.service_account_email,
         )
 
     def _task_open_logs(self) -> object:
@@ -395,6 +437,7 @@ class SyncPanel(ttk.Frame):
             credential_path=credential_path,
             service_account_email=service_email,
             worksheet_title=worksheet_title or DEFAULT_WORKSHEET_TITLE,
+            sheet_gid=self._settings.sheet_gid,
         )
 
     def _persist_settings(self) -> None:
