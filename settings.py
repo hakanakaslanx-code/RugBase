@@ -4,33 +4,22 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
 
-import db
-import dependency_loader
 from core import app_paths
 
 
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_SETTINGS_PATH = db.data_path("settings.json")
+DEFAULT_SETTINGS_PATH = str(app_paths.data_path("settings.json"))
 
 DEFAULT_SPREADSHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
 DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
 DEFAULT_WORKSHEET_TITLE = "items"
-SYNC_SETTINGS_PATH = db.data_path("sync_settings.json")
-_CREDENTIALS_TARGET = app_paths.credentials_path("service_account.json")
-_BUNDLED_CREDENTIALS = dependency_loader.default_credentials_path("service_account.json")
-if _BUNDLED_CREDENTIALS is not None and not _CREDENTIALS_TARGET.exists():
-    try:
-        shutil.copy2(_BUNDLED_CREDENTIALS, _CREDENTIALS_TARGET)
-    except OSError as exc:  # pragma: no cover - depends on filesystem state
-        logger.debug("Bundled credentials could not be copied: %s", exc, exc_info=True)
-
-DEFAULT_CREDENTIALS_PATH = str(_CREDENTIALS_TARGET)
+SYNC_SETTINGS_PATH = str(app_paths.data_path("sync_settings.json"))
+DEFAULT_CREDENTIALS_PATH = str((app_paths.APP_DIR / "credentials.json").resolve())
 
 DEFAULT_CONFIG = {
     "dymo_label": {
@@ -124,7 +113,10 @@ class GoogleSyncSettings:
     credential_path: str
     service_account_email: str = DEFAULT_SERVICE_ACCOUNT_EMAIL
     worksheet_title: str = DEFAULT_WORKSHEET_TITLE
-    sheet_gid: str = ""
+    inventory_tab: str = "Inventory"
+    customers_tab: str = "Customers"
+    logs_tab: str = "Logs"
+    settings_tab: str = "Settings"
     column_mapping: List[ColumnMapping] = field(default_factory=list)
     minute_limit: int = 1
     sync_interval_seconds: int = 60
@@ -141,7 +133,10 @@ class GoogleSyncSettings:
             "credential_path": self.credential_path,
             "service_account_email": self.service_account_email,
             "worksheet_title": self.worksheet_title,
-            "sheet_gid": self.sheet_gid,
+            "inventory_tab": self.inventory_tab,
+            "customers_tab": self.customers_tab,
+            "logs_tab": self.logs_tab,
+            "settings_tab": self.settings_tab,
             "minute_limit": self.minute_limit,
             "sync_interval_seconds": self.sync_interval_seconds,
             "column_mapping": [{"field": entry.field, "header": entry.header} for entry in self.column_mapping],
@@ -210,7 +205,10 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, object]:
         "credential_path": DEFAULT_CREDENTIALS_PATH,
         "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
         "worksheet_title": DEFAULT_WORKSHEET_TITLE,
-        "sheet_gid": "",
+        "inventory_tab": "Inventory",
+        "customers_tab": "Customers",
+        "logs_tab": "Logs",
+        "settings_tab": "Settings",
         "minute_limit": 1,
         "sync_interval_seconds": 60,
         "column_mapping": [],
@@ -261,7 +259,10 @@ def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSetti
         credential_path=str(data.get("credential_path", DEFAULT_CREDENTIALS_PATH)),
         service_account_email=str(data.get("service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL)),
         worksheet_title=str(data.get("worksheet_title", DEFAULT_WORKSHEET_TITLE)),
-        sheet_gid=str(data.get("sheet_gid", "")),
+        inventory_tab=str(data.get("inventory_tab", "Inventory")),
+        customers_tab=str(data.get("customers_tab", "Customers")),
+        logs_tab=str(data.get("logs_tab", "Logs")),
+        settings_tab=str(data.get("settings_tab", "Settings")),
         column_mapping=mapping_entries,
         minute_limit=int(data.get("minute_limit", 1)),
         sync_interval_seconds=int(data.get("sync_interval_seconds", 60)),

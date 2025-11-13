@@ -1,56 +1,52 @@
-"""Tests for automatic inventory column maintenance."""
-
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
 
-import sys
+import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-import consignment_repo
 import db
+from core.sheets_client import SheetTabData
+from settings import GoogleSyncSettings
 
 
-def _set_temp_db(tmp_path, monkeypatch) -> Path:
-    temp_db = tmp_path / "rugbase.db"
-    monkeypatch.setattr(db, "DB_PATH", str(temp_db))
-    monkeypatch.setattr(consignment_repo, "migrate", lambda: None)
-    return temp_db
+class StubClient:
+    def __init__(self, inventory_headers):
+        self.tabs = {
+            "Inventory": SheetTabData(title="Inventory", headers=inventory_headers, rows=[]),
+            "Customers": SheetTabData(title="Customers", headers=[], rows=[]),
+            "Logs": SheetTabData(title="Logs", headers=[], rows=[]),
+            "Settings": SheetTabData(title="Settings", headers=[], rows=[]),
+        }
+
+    def fetch_tabs(self, titles, *, columns=80):
+        return {title: self.tabs[title] for title in titles}
+
+    def update_tabs(self, payload):
+        pass
 
 
-def _existing_columns() -> List[str]:
-    with db.get_connection() as conn:
-        cursor = conn.execute("PRAGMA table_info(item)")
-        return [row[1] for row in cursor.fetchall()]
+@pytest.fixture
+def stubbed_datastore(tmp_path, monkeypatch):
+    credentials = tmp_path / "cred.json"
+    credentials.write_text("{}", encoding="utf-8")
+    settings = GoogleSyncSettings(
+        spreadsheet_id="TEST",
+        credential_path=str(credentials),
+        worksheet_title="items",
+        inventory_tab="Inventory",
+        customers_tab="Customers",
+        logs_tab="Logs",
+        settings_tab="Settings",
+    )
+    monkeypatch.setattr(db, "load_google_sync_settings", lambda: settings)
+    client = StubClient(["ItemId", "RugNo"])
+    monkeypatch.setattr(db, "build_client", lambda spreadsheet_id, credential_path: client)
+    monkeypatch.setattr(db, "_DATASTORE", db.SheetsDataStore())
+    return client
 
 
-def test_ensure_inventory_columns_adds_missing_fields(tmp_path, monkeypatch):
-    _set_temp_db(tmp_path, monkeypatch)
-    with db.get_connection() as conn:
-        conn.execute("CREATE TABLE item (item_id TEXT PRIMARY KEY, rug_no TEXT)")
-        conn.commit()
-
-    added = db.ensure_inventory_columns()
-    assert "content" in added
-    columns = _existing_columns()
-    assert "content" in columns
-
-    added_again = db.ensure_inventory_columns()
-    assert added_again == []
-
-
-def test_initialize_database_reports_added_columns(tmp_path, monkeypatch):
-    _set_temp_db(tmp_path, monkeypatch)
-    with db.get_connection() as conn:
-        conn.execute("CREATE TABLE item (item_id TEXT PRIMARY KEY, rug_no TEXT)")
-        conn.commit()
-
-    added = db.initialize_database()
-    assert "content" in added
-
-    added_after_setup = db.initialize_database()
-    assert added_after_setup == []
+def test_ensure_inventory_columns_reports_missing(stubbed_datastore):
+    db.initialize_database()
+    missing = db.ensure_inventory_columns()
+    assert "Retail" in missing
+    assert "RugNo" not in missing

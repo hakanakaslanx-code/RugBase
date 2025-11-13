@@ -1,160 +1,26 @@
-import getpass
-import json
+"""Google Sheets backed data access layer for RugBase."""
+
+from __future__ import annotations
+
 import logging
 import os
-import re
-import sqlite3
-import sys
 import threading
 import uuid
-from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from core import app_paths
-
-DB_FILENAME = "rugbase.db"
-
-
-def _get_base_directory() -> str:
-    """Return the base directory for packaged application resources."""
-
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def resource_path(*parts: str) -> str:
-    """Resolve a path relative to the application base directory."""
-
-    return os.path.join(_get_base_directory(), *parts)
-
-
-def data_path(*parts: str) -> str:
-    """Resolve a path inside the mutable application data directory."""
-
-    return str(app_paths.data_path(*parts))
-
-
-DB_PATH = data_path(DB_FILENAME)
-
-ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
-
-
-def _now_iso() -> str:
-    """Return the current UTC timestamp formatted as ISO 8601 without microseconds."""
-
-    return datetime.utcnow().replace(microsecond=0).isoformat()
-
+from core.sheets_client import (
+    SheetTabData,
+    SheetsApiResponseError,
+    SheetsClientError,
+    SheetsCredentialsError,
+    build_client,
+)
+from settings import GoogleSyncSettings, load_google_sync_settings
 
 logger = logging.getLogger(__name__)
-
-
-_ITEM_UPSERT_LISTENERS: List[Callable[[str], None]] = []
-_ITEM_UPSERT_LISTENERS_LOCK = threading.Lock()
-
-
-def _default_updated_by() -> str:
-    for env_var in ("RUGBASE_USER", "USERNAME", "USER"):
-        value = os.getenv(env_var)
-        if value:
-            return value
-    try:
-        return getpass.getuser()
-    except Exception:  # pragma: no cover - platform dependent
-        return "local"
-
-
-def _ensure_rb_id(value: Optional[str]) -> str:
-    return value or str(uuid.uuid4())
-
-
-def add_item_upsert_listener(listener: Callable[[str], None]) -> None:
-    """Register a callable that will be notified when an item is inserted or updated."""
-
-    if not callable(listener):
-        raise TypeError("listener must be callable")
-
-    with _ITEM_UPSERT_LISTENERS_LOCK:
-        if listener in _ITEM_UPSERT_LISTENERS:
-            logger.debug("Listener %r already registered for item upsert notifications", listener)
-            return
-        _ITEM_UPSERT_LISTENERS.append(listener)
-        logger.debug("Registered item upsert listener %r", listener)
-
-
-def remove_item_upsert_listener(listener: Callable[[str], None]) -> None:
-    """Remove a previously registered upsert listener."""
-
-    with _ITEM_UPSERT_LISTENERS_LOCK:
-        try:
-            _ITEM_UPSERT_LISTENERS.remove(listener)
-        except ValueError:
-            logger.debug("Attempted to remove unknown item upsert listener %r", listener)
-        else:
-            logger.debug("Removed item upsert listener %r", listener)
-
-
-def _notify_item_upsert(item_id: str) -> None:
-    """Invoke registered listeners for an item upsert event."""
-
-    with _ITEM_UPSERT_LISTENERS_LOCK:
-        listeners = list(_ITEM_UPSERT_LISTENERS)
-
-    if not listeners:
-        logger.debug("No item upsert listeners registered; skipping notification for %s", item_id)
-        return
-
-    logger.debug(
-        "Dispatching item upsert notification for %s to %d listener(s)",
-        item_id,
-        len(listeners),
-    )
-
-    for listener in listeners:
-        try:
-            listener(item_id)
-        except Exception:  # pragma: no cover - defensive logging
-            logger.exception("Item upsert listener %r raised an exception", listener)
-
-
-PROCESSED_CHANGES_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS processed_changes (
-    change_file TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL
-)
-"""
-
-
-CONFLICTS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS conflicts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    change_file TEXT NOT NULL,
-    item_id TEXT,
-    reason TEXT NOT NULL,
-    payload TEXT,
-    created_at TEXT NOT NULL,
-    resolved INTEGER NOT NULL DEFAULT 0
-)
-"""
-
-
-PROCESSED_STOCK_TXN_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS processed_stock_txns (
-    txn_id TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL
-)
-"""
-
-
-SYNC_QUEUE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS sync_queue (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    rb_id TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    retries INTEGER NOT NULL DEFAULT 0
-)
-"""
 
 
 MASTER_SHEET_COLUMNS: List[Tuple[str, str]] = [
@@ -187,11 +53,8 @@ MASTER_SHEET_COLUMNS: List[Tuple[str, str]] = [
 
 MASTER_SHEET_FIELDS: Tuple[str, ...] = tuple(field for field, _ in MASTER_SHEET_COLUMNS)
 
-NUMERIC_FIELDS = {"area", "sp", "cost"}
+NUMERIC_FIELDS = {"area", "sp", "cost", "rate", "amount", "retail", "msrp"}
 
-# Mapping of module-level field names to database column definitions.
-# This helps keep the inventory table aligned with UI components such as the
-# barcode and label generator, which expect these fields to be present.
 MODULE_FIELD_COLUMN_MAP: Dict[str, Tuple[str, str]] = {
     "RugNo": ("rug_no", "TEXT"),
     "MSRP": ("msrp", "TEXT"),
@@ -202,9 +65,9 @@ MODULE_FIELD_COLUMN_MAP: Dict[str, Tuple[str, str]] = {
     "Type": ("type", "TEXT"),
 }
 
-MODULE_COLUMN_DEFINITIONS: Dict[str, str] = {}
-for module_field, (column, definition) in MODULE_FIELD_COLUMN_MAP.items():
-    MODULE_COLUMN_DEFINITIONS[column] = definition
+MODULE_COLUMN_DEFINITIONS: Dict[str, str] = {
+    column: definition for column, definition in MODULE_FIELD_COLUMN_MAP.values()
+}
 
 ADDITIONAL_ITEM_FIELDS: Tuple[str, ...] = tuple(
     column for column in MODULE_COLUMN_DEFINITIONS if column not in MASTER_SHEET_FIELDS
@@ -215,29 +78,6 @@ for module_field, (column, _definition) in MODULE_FIELD_COLUMN_MAP.items():
     COLUMN_DISPLAY_NAMES.setdefault(column, module_field)
 
 INVENTORY_CORE_FIELDS: Tuple[str, ...] = MASTER_SHEET_FIELDS + ADDITIONAL_ITEM_FIELDS
-
-TABLE_COLUMNS: List[Tuple[str, str]] = [
-    ("item_id", "TEXT PRIMARY KEY"),
-    ("rb_id", "TEXT UNIQUE"),
-    *[
-        (field, "REAL" if field in NUMERIC_FIELDS else "TEXT")
-        for field in MASTER_SHEET_FIELDS
-    ],
-    *[(field, MODULE_COLUMN_DEFINITIONS.get(field, "TEXT")) for field in ADDITIONAL_ITEM_FIELDS],
-    ("qty", "INTEGER DEFAULT 0"),
-    ("created_at", "TEXT"),
-    ("updated_at", "TEXT"),
-    ("updated_by", "TEXT"),
-    ("version", "INTEGER DEFAULT 0"),
-    ("last_pushed_version", "INTEGER DEFAULT 0"),
-    ("status", "TEXT DEFAULT 'in_stock'"),
-    ("location", "TEXT DEFAULT 'warehouse'"),
-    ("consignment_id", "INTEGER"),
-    ("sold_at", "TEXT"),
-    ("customer_id", "INTEGER"),
-    ("sale_price", "REAL"),
-    ("sale_note", "TEXT"),
-]
 
 UPDATABLE_FIELDS: Tuple[str, ...] = (
     *INVENTORY_CORE_FIELDS,
@@ -251,23 +91,6 @@ UPDATABLE_FIELDS: Tuple[str, ...] = (
     "sale_note",
 )
 
-
-CUSTOMER_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS customers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    full_name TEXT NOT NULL,
-    phone TEXT,
-    email TEXT,
-    address TEXT,
-    city TEXT,
-    state TEXT,
-    zip TEXT,
-    notes TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-)
-"""
-
 CUSTOMER_FIELDS: Tuple[str, ...] = (
     "full_name",
     "phone",
@@ -279,1148 +102,674 @@ CUSTOMER_FIELDS: Tuple[str, ...] = (
     "notes",
 )
 
-CUSTOMER_SELECT_FIELDS: Tuple[str, ...] = (
-    "id",
-    *CUSTOMER_FIELDS,
-    "created_at",
-    "updated_at",
+CUSTOMER_HEADERS: Tuple[str, ...] = (
+    "Id",
+    "FullName",
+    "Phone",
+    "Email",
+    "Address",
+    "City",
+    "State",
+    "Zip",
+    "Notes",
+    "CreatedAt",
+    "UpdatedAt",
 )
 
-
-def _build_create_table_sql(columns: Iterable[Tuple[str, str]]) -> str:
-    column_defs = ",\n".join(f"    {name} {definition}" for name, definition in columns)
-    return f"CREATE TABLE IF NOT EXISTS item (\n{column_defs}\n)"
+_ITEM_UPSERT_LISTENERS: List[Callable[[str], None]] = []
+_LISTENER_LOCK = threading.Lock()
 
 
-CREATE_ITEM_TABLE_SQL = _build_create_table_sql(TABLE_COLUMNS)
-
-SAMPLE_ITEMS = [
-    {
-        "item_id": "ITEM-001",
-        "rug_no": "RUG-1001",
-        "upc": "123456789012",
-        "roll_no": "RN-001",
-        "v_rug_no": "VR-2001",
-        "v_collection": "Vintage",
-        "collection": "Heritage",
-        "v_design": "Vintage Floral",
-        "design": "Floral",
-        "brand_name": "RugMasters",
-        "ground": "Blue",
-        "border": "Cream",
-        "a_size": "5x8",
-        "st_size": "60x96",
-        "area": 40.0,
-        "type": "Handmade",
-        "rate": "45.00",
-        "amount": "1800.00",
-        "shape": "Rectangle",
-        "style": "Classic",
-        "image_file_name": "rug1001.jpg",
-        "origin": "India",
-        "retail": "2200.00",
-        "sp": 2000.0,
-        "msrp": "2500.00",
-        "cost": 1500.0,
-    },
-    {
-        "item_id": "ITEM-002",
-        "rug_no": "RUG-1002",
-        "upc": "223456789012",
-        "roll_no": "RN-002",
-        "v_rug_no": "VR-2002",
-        "v_collection": "Modern",
-        "collection": "Contemporary",
-        "v_design": "Metro Geo",
-        "design": "Geometric",
-        "brand_name": "UrbanRugs",
-        "ground": "Gray",
-        "border": "Black",
-        "a_size": "6x9",
-        "st_size": "72x108",
-        "area": 54.0,
-        "type": "Machine",
-        "rate": "30.00",
-        "amount": "1620.00",
-        "shape": "Rectangle",
-        "style": "Modern",
-        "image_file_name": "rug1002.jpg",
-        "origin": "Turkey",
-        "retail": "1900.00",
-        "sp": 1700.0,
-        "msrp": "2100.00",
-        "cost": 1200.0,
-    },
-    {
-        "item_id": "ITEM-003",
-        "rug_no": "RUG-1003",
-        "upc": "323456789012",
-        "roll_no": "RN-003",
-        "v_rug_no": "VR-2003",
-        "v_collection": "Classic",
-        "collection": "Traditions",
-        "v_design": "Royal Crest",
-        "design": "Medallion",
-        "brand_name": "RugMasters",
-        "ground": "Red",
-        "border": "Gold",
-        "a_size": "8x10",
-        "st_size": "96x120",
-        "area": 80.0,
-        "type": "Handmade",
-        "rate": "55.00",
-        "amount": "4400.00",
-        "shape": "Rectangle",
-        "style": "Traditional",
-        "image_file_name": "rug1003.jpg",
-        "origin": "Iran",
-        "retail": "5200.00",
-        "sp": 5000.0,
-        "msrp": "5600.00",
-        "cost": 3200.0,
-    },
-]
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
 
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _default_updated_by() -> str:
+    for env_var in ("RUGBASE_USER", "USERNAME", "USER"):
+        value = os.getenv(env_var)
+        if value:
+            return value
+    return "operator"
+
+
+def _normalize_timestamp(value: Optional[str]) -> str:
+    if not value:
+        return _utc_now().isoformat()
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return _utc_now().isoformat()
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.replace(microsecond=0).isoformat()
+
+
+def _clean_numeric(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    import re
+
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[^0-9.,-]", "", text)
+    if not text:
+        return None
+    comma = text.count(",")
+    dot = text.count(".")
+    decimal = "."
+    thousands = ""
+    if comma and dot:
+        decimal = "," if text.rfind(",") > text.rfind(".") else "."
+        thousands = "." if decimal == "," else ","
+    elif comma and not dot:
+        decimal = ","
+    if thousands:
+        text = text.replace(thousands, "")
+    if decimal == ",":
+        text = text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_numeric(value: Optional[str]) -> Optional[float]:
+    return _clean_numeric(value)
+
+
+def _normalize_dimension(value: Optional[str]) -> Optional[Tuple[float, float]]:
+    if not value:
+        return None
+    parts = [part.strip() for part in str(value).split("x") if part.strip()]
+    if len(parts) != 2:
+        return None
+    width = _clean_numeric(parts[0].replace(",", "."))
+    height = _clean_numeric(parts[1].replace(",", "."))
+    if width is None or height is None:
+        return None
+    return width, height
+
+
+def calculate_area(st_size: Optional[str], area_value: Optional[str], a_size: Optional[str]) -> Optional[float]:
+    if area_value:
+        parsed = _clean_numeric(area_value)
+        if parsed is not None:
+            return parsed
+    for candidate in (st_size, a_size):
+        dims = _normalize_dimension(candidate)
+        if dims:
+            width, height = dims
+            return round(width * height, 2)
+    return None
+
+
+def _notify_item_upsert(item_id: str) -> None:
+    with _LISTENER_LOCK:
+        listeners = list(_ITEM_UPSERT_LISTENERS)
+    for listener in listeners:
+        try:
+            listener(item_id)
+        except Exception:
+            logger.exception("Item upsert listener raised an exception")
+
+
+def add_item_upsert_listener(listener: Callable[[str], None]) -> None:
+    if not callable(listener):
+        raise TypeError("listener must be callable")
+    with _LISTENER_LOCK:
+        if listener not in _ITEM_UPSERT_LISTENERS:
+            _ITEM_UPSERT_LISTENERS.append(listener)
+
+
+def remove_item_upsert_listener(listener: Callable[[str], None]) -> None:
+    with _LISTENER_LOCK:
+        if listener in _ITEM_UPSERT_LISTENERS:
+            _ITEM_UPSERT_LISTENERS.remove(listener)
+
+
+@dataclass
+class SheetSnapshot:
+    headers: List[str]
+    rows: List[List[str]]
+    digest: str
+
+
+@dataclass
+class InventoryRecord:
+    data: Dict[str, Any]
+    index: int
+
+
+class SheetsDataStore:
+    """In-memory cache backed by Google Sheets."""
+
+    def __init__(self) -> None:
+        self._settings: Optional[GoogleSyncSettings] = None
+        self._client = None
+        self._lock = threading.RLock()
+        self._inventory_headers: List[str] = []
+        self._inventory_order: List[str] = []
+        self._inventory: Dict[str, InventoryRecord] = {}
+        self._customers: Dict[str, Dict[str, Any]] = {}
+        self._logs: List[Dict[str, Any]] = []
+        self._settings_rows: Dict[str, Any] = {}
+        self._snapshots: Dict[str, SheetSnapshot] = {}
+        self._online = False
+        self._last_error: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    def initialize(self) -> List[str]:
+        settings = load_google_sync_settings()
+        credential_path = Path(settings.credential_path)
+        if not credential_path.exists():
+            raise SheetsCredentialsError(
+                f"Credentials not found: {credential_path}"
+            )
+
+        client = build_client(settings.spreadsheet_id, credential_path)
+        titles = [
+            settings.inventory_tab,
+            settings.customers_tab,
+            settings.logs_tab,
+            settings.settings_tab,
+        ]
+        snapshots = client.fetch_tabs(titles, columns=80)
+        missing_columns = self._load_inventory(settings, snapshots.get(settings.inventory_tab))
+        self._load_customers(settings, snapshots.get(settings.customers_tab))
+        self._load_logs(snapshots.get(settings.logs_tab))
+        self._load_settings(snapshots.get(settings.settings_tab))
+        with self._lock:
+            self._settings = settings
+            self._client = client
+            self._online = True
+            self._last_error = None
+            self._snapshots = {
+                title: SheetSnapshot(headers=data.headers, rows=data.rows, digest=self._calc_digest(data.rows))
+                for title, data in snapshots.items()
+            }
+        return missing_columns
+
+    def _calc_digest(self, rows: Sequence[Sequence[str]]) -> str:
+        import hashlib
+        import json
+
+        payload = json.dumps(list(rows), sort_keys=True).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    # ------------------------------------------------------------------
+    # Inventory helpers
+    # ------------------------------------------------------------------
+    def _load_inventory(self, settings: GoogleSyncSettings, tab: Optional[SheetTabData]) -> List[str]:
+        headers = list(tab.headers if tab else [])
+        if "ItemId" not in headers:
+            headers.insert(0, "ItemId")
+        if "UpdatedAt" not in headers:
+            headers.append("UpdatedAt")
+        if "UpdatedBy" not in headers:
+            headers.append("UpdatedBy")
+        header_map = {header: index for index, header in enumerate(headers)}
+        missing_headers: List[str] = [header for _field, header in MASTER_SHEET_COLUMNS if header not in header_map]
+
+        inventory: Dict[str, InventoryRecord] = {}
+        order: List[str] = []
+        rows = tab.rows if tab else []
+        for row_index, row in enumerate(rows):
+            values = list(row) + [""] * (len(headers) - len(row))
+            item_id = values[header_map.get("ItemId", 0)] if header_map.get("ItemId") is not None else ""
+            if not item_id:
+                fallback = header_map.get("RowID")
+                if fallback is not None:
+                    item_id = values[fallback]
+            if not item_id:
+                fallback = header_map.get("RugNo")
+                if fallback is not None:
+                    item_id = values[fallback]
+            if not item_id:
+                item_id = str(uuid.uuid4())
+
+            record: Dict[str, Any] = {"item_id": item_id}
+            for field, header in MASTER_SHEET_COLUMNS:
+                index = header_map.get(header)
+                value = values[index] if index is not None else ""
+                if field in NUMERIC_FIELDS:
+                    record[field] = _clean_numeric(value)
+                else:
+                    record[field] = value
+
+            record.setdefault("qty", _clean_numeric(values[header_map.get("Qty", -1)]) or 0)
+            record["status"] = values[header_map.get("Status", -1)] if header_map.get("Status") is not None else "active"
+            record["location"] = values[header_map.get("Location", -1)] if header_map.get("Location") is not None else "warehouse"
+            record["consignment_id"] = values[header_map.get("ConsignmentId", -1)] if header_map.get("ConsignmentId") is not None else ""
+            record["sold_at"] = values[header_map.get("SoldAt", -1)] if header_map.get("SoldAt") is not None else ""
+            record["customer_id"] = values[header_map.get("CustomerId", -1)] if header_map.get("CustomerId") is not None else ""
+            record["sale_price"] = _clean_numeric(values[header_map.get("SalePrice", -1)]) if header_map.get("SalePrice") is not None else None
+            record["sale_note"] = values[header_map.get("SaleNote", -1)] if header_map.get("SaleNote") is not None else ""
+            record["updated_at"] = _normalize_timestamp(values[header_map.get("UpdatedAt", -1)])
+            record["updated_by"] = values[header_map.get("UpdatedBy", -1)] if header_map.get("UpdatedBy") is not None else _default_updated_by()
+
+            inventory[item_id] = InventoryRecord(data=record, index=row_index)
+            order.append(item_id)
+
+        with self._lock:
+            self._inventory_headers = headers
+            self._inventory = inventory
+            self._inventory_order = order
+        return missing_headers
+
+    def _write_inventory(self) -> None:
+        settings = self._settings
+        client = self._client
+        if not settings or not client:
+            raise RuntimeError("Sheets datastore not initialised")
+        rows = [self._row_from_record(self._inventory[item_id].data) for item_id in self._inventory_order]
+        tab = SheetTabData(title=settings.inventory_tab, headers=self._inventory_headers, rows=rows)
+        try:
+            client.update_tabs({settings.inventory_tab: tab})
+        except SheetsClientError as exc:
+            with self._lock:
+                self._online = False
+                self._last_error = str(exc)
+            raise
+        with self._lock:
+            self._online = True
+            self._last_error = None
+            self._snapshots[settings.inventory_tab] = SheetSnapshot(
+                headers=self._inventory_headers,
+                rows=rows,
+                digest=self._calc_digest(rows),
+            )
+
+    def _row_from_record(self, record: Mapping[str, Any]) -> List[str]:
+        row: List[str] = []
+        for header in self._inventory_headers:
+            field = self._field_for_header(header)
+            value = record.get(field)
+            if field in NUMERIC_FIELDS and value is not None:
+                row.append(str(value))
+            elif value is None:
+                row.append("")
+            else:
+                row.append(str(value))
+        return row
+
+    def _field_for_header(self, header: str) -> str:
+        header_map = {
+            "ItemId": "item_id",
+            "RowID": "item_id",
+            "UpdatedAt": "updated_at",
+            "UpdatedBy": "updated_by",
+            "Qty": "qty",
+            "Status": "status",
+            "Location": "location",
+            "ConsignmentId": "consignment_id",
+            "SoldAt": "sold_at",
+            "CustomerId": "customer_id",
+            "SalePrice": "sale_price",
+            "SaleNote": "sale_note",
+        }
+        if header in header_map:
+            return header_map[header]
+        for field, sheet_header in MASTER_SHEET_COLUMNS:
+            if sheet_header == header:
+                return field
+        return header.lower()
+
+    # ------------------------------------------------------------------
+    # Customer helpers
+    # ------------------------------------------------------------------
+    def _load_customers(self, settings: GoogleSyncSettings, tab: Optional[SheetTabData]) -> None:
+        rows = tab.rows if tab else []
+        customers: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            values = list(row) + [""] * (len(CUSTOMER_HEADERS) - len(row))
+            data = {
+                "id": values[0] or str(uuid.uuid4()),
+                "full_name": values[1],
+                "phone": values[2],
+                "email": values[3],
+                "address": values[4],
+                "city": values[5],
+                "state": values[6],
+                "zip": values[7],
+                "notes": values[8],
+                "created_at": values[9] or _utc_now().isoformat(),
+                "updated_at": values[10] or _utc_now().isoformat(),
+            }
+            customers[data["id"]] = data
+        with self._lock:
+            self._customers = customers
+
+    def _write_customers(self) -> None:
+        settings = self._settings
+        client = self._client
+        if not settings or not client:
+            raise RuntimeError("Sheets datastore not initialised")
+        rows = []
+        for customer in self._customers.values():
+            rows.append([
+                customer.get("id", ""),
+                customer.get("full_name", ""),
+                customer.get("phone", ""),
+                customer.get("email", ""),
+                customer.get("address", ""),
+                customer.get("city", ""),
+                customer.get("state", ""),
+                customer.get("zip", ""),
+                customer.get("notes", ""),
+                customer.get("created_at", ""),
+                customer.get("updated_at", ""),
+            ])
+        tab = SheetTabData(title=settings.customers_tab, headers=list(CUSTOMER_HEADERS), rows=rows)
+        try:
+            client.update_tabs({settings.customers_tab: tab})
+        except SheetsClientError as exc:
+            with self._lock:
+                self._online = False
+                self._last_error = str(exc)
+            raise
+        with self._lock:
+            self._online = True
+            self._last_error = None
+            self._snapshots[settings.customers_tab] = SheetSnapshot(
+                headers=list(CUSTOMER_HEADERS),
+                rows=rows,
+                digest=self._calc_digest(rows),
+            )
+
+    # ------------------------------------------------------------------
+    # Logs & settings
+    # ------------------------------------------------------------------
+    def _load_logs(self, tab: Optional[SheetTabData]) -> None:
+        rows = tab.rows if tab else []
+        logs: List[Dict[str, Any]] = []
+        for row in rows:
+            if not row:
+                continue
+            timestamp = row[0] if len(row) > 0 else _utc_now().isoformat()
+            message = row[1] if len(row) > 1 else ""
+            logs.append({"timestamp": timestamp, "message": message})
+        with self._lock:
+            self._logs = logs
+
+    def _load_settings(self, tab: Optional[SheetTabData]) -> None:
+        rows = tab.rows if tab else []
+        settings_rows: Dict[str, Any] = {}
+        for row in rows:
+            if len(row) < 2:
+                continue
+            settings_rows[row[0]] = row[1]
+        with self._lock:
+            self._settings_rows = settings_rows
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+    def is_online(self) -> bool:
+        with self._lock:
+            return self._online
+
+    def last_error(self) -> Optional[str]:
+        with self._lock:
+            return self._last_error
+
+    def list_items(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(self._inventory[item_id].data) for item_id in self._inventory_order]
+
+    def get_item(self, item_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            record = self._inventory.get(item_id)
+            return dict(record.data) if record else None
+
+    def upsert_item(self, payload: Mapping[str, Any]) -> Tuple[str, bool]:
+        if not self.is_online():
+            raise SheetsApiResponseError("Offline mode: changes cannot be saved")
+        item_id = str(payload.get("item_id") or uuid.uuid4())
+        created = False
+        with self._lock:
+            record = self._inventory.get(item_id)
+            if record is None:
+                created = True
+                record = InventoryRecord(data={"item_id": item_id}, index=len(self._inventory_order))
+                self._inventory[item_id] = record
+                self._inventory_order.append(item_id)
+            record.data.update(payload)
+            record.data["item_id"] = item_id
+            record.data["updated_at"] = _utc_now().isoformat()
+            record.data["updated_by"] = _default_updated_by()
+            for field in NUMERIC_FIELDS:
+                record.data[field] = _clean_numeric(record.data.get(field))
+        self._write_inventory()
+        _notify_item_upsert(item_id)
+        return item_id, created
+
+    def delete_item(self, item_id: str) -> None:
+        if not self.is_online():
+            raise SheetsApiResponseError("Offline mode: changes cannot be saved")
+        with self._lock:
+            if item_id not in self._inventory:
+                return
+            self._inventory.pop(item_id)
+            self._inventory_order = [value for value in self._inventory_order if value != item_id]
+        self._write_inventory()
+
+    def refresh(self) -> bool:
+        settings = self._settings
+        client = self._client
+        if not settings or not client:
+            raise RuntimeError("Sheets datastore not initialised")
+        titles = [settings.inventory_tab, settings.customers_tab]
+        try:
+            snapshots = client.fetch_tabs(titles, columns=80)
+        except SheetsClientError as exc:
+            with self._lock:
+                self._online = False
+                self._last_error = str(exc)
+            raise
+        changed = False
+        inventory_tab = snapshots.get(settings.inventory_tab)
+        if inventory_tab:
+            digest = self._calc_digest(inventory_tab.rows)
+            current = self._snapshots.get(settings.inventory_tab)
+            if not current or digest != current.digest:
+                self._load_inventory(settings, inventory_tab)
+                changed = True
+        customer_tab = snapshots.get(settings.customers_tab)
+        if customer_tab:
+            digest = self._calc_digest(customer_tab.rows)
+            current = self._snapshots.get(settings.customers_tab)
+            if not current or digest != current.digest:
+                self._load_customers(settings, customer_tab)
+        with self._lock:
+            self._online = True
+            self._last_error = None
+        return changed
+
+    def list_customers(self, query: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            customers = list(self._customers.values())
+        if query:
+            lowered = query.lower()
+            customers = [customer for customer in customers if lowered in customer.get("full_name", "").lower()]
+        return [dict(customer) for customer in customers]
+
+    def get_customer(self, customer_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            customer = self._customers.get(str(customer_id))
+            return dict(customer) if customer else None
+
+    def upsert_customer(self, data: Mapping[str, Any]) -> str:
+        if not self.is_online():
+            raise SheetsApiResponseError("Offline mode: changes cannot be saved")
+        customer_id = str(data.get("id") or uuid.uuid4())
+        with self._lock:
+            record = self._customers.get(customer_id, {})
+            created_at = record.get("created_at", _utc_now().isoformat())
+            payload = dict(record)
+            payload.update(data)
+            payload["id"] = customer_id
+            payload["created_at"] = created_at
+            payload["updated_at"] = _utc_now().isoformat()
+            self._customers[customer_id] = payload
+        self._write_customers()
+        return customer_id
+
+    def append_log(self, message: str) -> None:
+        timestamp = _utc_now().isoformat()
+        with self._lock:
+            self._logs.append({"timestamp": timestamp, "message": message})
+
+    def mark_item_sold(
+        self,
+        item_id: str,
+        *,
+        sold_at: Optional[str] = None,
+        sale_price: Optional[str] = None,
+        customer_id: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "sold_at": sold_at or _utc_now().isoformat(),
+            "sale_price": sale_price,
+            "customer_id": customer_id or "",
+            "sale_note": note or "",
+            "status": "sold",
+        }
+        self.upsert_item({"item_id": item_id, **payload})
+
+    def sales_summary(self) -> Dict[str, float]:
+        total_items = 0
+        total_area = 0.0
+        for record in self.list_items():
+            total_items += 1
+            area = record.get("area")
+            if isinstance(area, (int, float)):
+                total_area += float(area)
+        return {"total_items": float(total_items), "total_area": round(total_area, 2)}
+
+
+_DATASTORE = SheetsDataStore()
 
 
 def initialize_database() -> List[str]:
-    db_directory = os.path.dirname(DB_PATH)
-    if db_directory and not os.path.exists(db_directory):
-        os.makedirs(db_directory, exist_ok=True)
-    added_columns: List[str] = []
-    with get_connection() as conn:
-        conn.execute(CREATE_ITEM_TABLE_SQL)
-        conn.execute(CUSTOMER_TABLE_SQL)
-        conn.execute(PROCESSED_CHANGES_TABLE_SQL)
-        conn.execute(CONFLICTS_TABLE_SQL)
-        conn.execute(PROCESSED_STOCK_TXN_TABLE_SQL)
-        conn.execute(SYNC_QUEUE_TABLE_SQL)
-        added_columns = _ensure_columns(conn)
-        cursor = conn.execute("SELECT COUNT(*) FROM item")
-        count = cursor.fetchone()[0]
-        if count == 0:
-            insert_fields = [
-                "item_id",
-                "rb_id",
-                *MASTER_SHEET_FIELDS,
-                "qty",
-                "created_at",
-                "updated_at",
-                "updated_by",
-                "version",
-                "last_pushed_version",
-            ]
-            placeholders = ", ".join(f":{field}" for field in insert_fields)
-            insert_item_sql = (
-                f"INSERT INTO item ({', '.join(insert_fields)}) VALUES ({placeholders})"
-            )
-            now = _now_iso()
-            seed_rows: List[Dict[str, Any]] = []
-            for index, sample in enumerate(SAMPLE_ITEMS, start=1):
-                record = dict(sample)
-                record.setdefault("rb_id", f"sample-{index:03d}")
-                record.setdefault("qty", 0)
-                record.setdefault("created_at", now)
-                record.setdefault("updated_at", now)
-                record.setdefault("updated_by", _default_updated_by())
-                record.setdefault("version", 0)
-                record.setdefault("last_pushed_version", 0)
-                seed_rows.append(record)
-            conn.executemany(insert_item_sql, seed_rows)
-            conn.commit()
-
-    from consignment_repo import migrate
-
-    migrate()
-    return added_columns
+    try:
+        return _DATASTORE.initialize()
+    except SheetsClientError as exc:
+        logger.error("Google Sheets initialise failed: %s", exc)
+        raise
 
 
 def ensure_inventory_columns() -> List[str]:
-    """Ensure that all required inventory columns exist, returning any additions."""
+    with _DATASTORE._lock:  # type: ignore[attr-defined]
+        headers = list(_DATASTORE._inventory_headers)
+    expected = [header for _field, header in MASTER_SHEET_COLUMNS]
+    return [header for header in expected if header not in headers]
 
-    with get_connection() as conn:
-        return _ensure_columns(conn)
 
-
-def fetch_items(
-    rug_no_filter: Optional[str] = None,
-    collection_filter: Optional[str] = None,
-    brand_filter: Optional[str] = None,
-    style_filter: Optional[str] = None,
-    status_filter: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    select_fields = [
-        "item_id",
-        "rb_id",
-        *INVENTORY_CORE_FIELDS,
-        "qty",
-        "created_at",
-        "updated_at",
-        "updated_by",
-        "version",
-        "last_pushed_version",
-        "status",
-        "location",
-        "consignment_id",
-        "sold_at",
-        "customer_id",
-        "sale_price",
-        "sale_note",
-    ]
-    query = f"SELECT {', '.join(select_fields)} FROM item"
-    filters = ["COALESCE(status, 'in_stock') != 'deleted'"]
-    params: List[Any] = []
-
-    if rug_no_filter:
-        filters.append("LOWER(rug_no) LIKE ?")
-        params.append(f"%{rug_no_filter.lower()}%")
-    if collection_filter:
-        filters.append("LOWER(collection) LIKE ?")
-        params.append(f"%{collection_filter.lower()}%")
-    if brand_filter:
-        filters.append("LOWER(brand_name) LIKE ?")
-        params.append(f"%{brand_filter.lower()}%")
-    if style_filter:
-        filters.append("LOWER(style) LIKE ?")
-        params.append(f"%{style_filter.lower()}%")
+def fetch_items(*, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    items = _DATASTORE.list_items()
     if status_filter:
-        filters.append("LOWER(COALESCE(status, '')) = ?")
-        params.append(status_filter.lower())
-
-    if filters:
-        query += " WHERE " + " AND ".join(filters)
-
-    query += " ORDER BY rug_no"
-
-    with get_connection() as conn:
-        cursor = conn.execute(query, params)
-        rows = cursor.fetchall()
-        return [dict(row) for row in rows]
-
-
-def search_items_for_labels(
-    rug_no: Optional[str] = None,
-    collection: Optional[str] = None,
-    design: Optional[str] = None,
-    color: Optional[str] = None,
-    size: Optional[str] = None,
-    origin: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    select_fields = [
-        "item_id",
-        "rb_id",
-        *INVENTORY_CORE_FIELDS,
-        "qty",
-        "created_at",
-        "updated_at",
-        "updated_by",
-        "version",
-        "last_pushed_version",
-    ]
-    query = f"SELECT {', '.join(select_fields)} FROM item"
-    filters: List[str] = ["COALESCE(status, 'in_stock') != 'deleted'"]
-    params: List[Any] = []
-
-    def _add_filter(field: str, value: Optional[str]) -> None:
-        if value:
-            filters.append(f"LOWER({field}) LIKE ?")
-            params.append(f"%{value.lower()}%")
-
-    _add_filter("rug_no", rug_no)
-    _add_filter("collection", collection)
-    _add_filter("design", design)
-    if color:
-        filters.append("(LOWER(ground) LIKE ? OR LOWER(border) LIKE ?)")
-        params.extend([f"%{color.lower()}%", f"%{color.lower()}%"])
-    _add_filter("st_size", size)
-    _add_filter("origin", origin)
-
-    if filters:
-        query += " WHERE " + " AND ".join(filters)
-
-    query += " ORDER BY rug_no"
-
-    with get_connection() as conn:
-        cursor = conn.execute(query, params)
-        rows = cursor.fetchall()
-        return [dict(row) for row in rows]
-
-
-def fetch_distinct_values(field: str) -> List[str]:
-    if field not in INVENTORY_CORE_FIELDS:
-        raise ValueError(f"Bilinmeyen alan: {field}")
-
-    query = (
-        f"SELECT DISTINCT {field} FROM item "
-        f"WHERE {field} IS NOT NULL AND TRIM({field}) != '' ORDER BY {field}"
-    )
-
-    with get_connection() as conn:
-        cursor = conn.execute(query)
-        values = [row[0] for row in cursor.fetchall() if row[0] is not None]
-        return [str(value) for value in values]
+        return [item for item in items if item.get("status") == status_filter]
+    return items
 
 
 def fetch_item(item_id: str) -> Optional[Dict[str, Any]]:
-    select_fields = [
-        "item_id",
-        "rb_id",
-        *INVENTORY_CORE_FIELDS,
-        "qty",
-        "created_at",
-        "updated_at",
-        "updated_by",
-        "version",
-        "last_pushed_version",
-        "status",
-        "location",
-        "consignment_id",
-        "sold_at",
-        "customer_id",
-        "sale_price",
-        "sale_note",
-    ]
-    query = f"SELECT {', '.join(select_fields)} FROM item WHERE item_id = ?"
-
-    with get_connection() as conn:
-        cursor = conn.execute(query, (item_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+    return _DATASTORE.get_item(item_id)
 
 
-def fetch_item_by_rug_no(rug_no: str) -> Optional[Dict[str, Any]]:
-    """Return the first inventory row matching ``rug_no``."""
-
-    select_fields = [
-        "item_id",
-        "rb_id",
-        *INVENTORY_CORE_FIELDS,
-        "qty",
-        "created_at",
-        "updated_at",
-        "updated_by",
-        "version",
-        "last_pushed_version",
-        "status",
-        "location",
-        "consignment_id",
-        "sold_at",
-        "customer_id",
-        "sale_price",
-        "sale_note",
-    ]
-    query = f"SELECT {', '.join(select_fields)} FROM item WHERE rug_no = ? LIMIT 1"
-
-    with get_connection() as conn:
-        cursor = conn.execute(query, (rug_no,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
-
-
-def update_item(item_data: Dict[str, Any]) -> None:
-    set_clause = ", ".join(f"{field} = ?" for field in UPDATABLE_FIELDS)
-    params = [item_data.get(field) for field in UPDATABLE_FIELDS]
-    now = _now_iso()
-    updated_by = item_data.get("updated_by") or _default_updated_by()
-    params.extend([now, updated_by, item_data["item_id"]])
-
-    with get_connection() as conn:
-        conn.execute(
-            f"UPDATE item SET {set_clause}, updated_at = ?, updated_by = ?, "
-            "version = COALESCE(version, 0) + 1 WHERE item_id = ?",
-            params,
-        )
-        conn.commit()
-
-    _notify_item_upsert(item_data["item_id"])
-
-
-def upsert_item(item_data: Dict[str, Any]) -> Tuple[str, bool]:
-    """Upsert an item and return a tuple of (item_id, created)."""
-
-    updatable_fields = list(UPDATABLE_FIELDS)
-
-    set_clause = ", ".join(f"{field} = ?" for field in updatable_fields)
-
-    match_values: List[Tuple[str, Any]] = []
-    if item_data.get("rug_no"):
-        match_values.append(("rug_no", item_data["rug_no"]))
-    if item_data.get("upc"):
-        match_values.append(("upc", item_data["upc"]))
-    if item_data.get("roll_no"):
-        match_values.append(("roll_no", item_data["roll_no"]))
-
-    with get_connection() as conn:
-        item_id: Optional[str] = None
-        for field, value in match_values:
-            cursor = conn.execute(
-                f"SELECT item_id FROM item WHERE {field} = ? LIMIT 1",
-                (value,),
-            )
-            row = cursor.fetchone()
-            if row:
-                item_id = row["item_id"]
-                break
-
-        if item_id:
-            select_fields = ", ".join(updatable_fields)
-            cursor = conn.execute(
-                f"SELECT {select_fields} FROM item WHERE item_id = ?",
-                (item_id,),
-            )
-            existing_row = cursor.fetchone()
-            merged_data = {
-                field: existing_row[field] if existing_row else None
-                for field in updatable_fields
-            }
-            for field in updatable_fields:
-                if field in item_data:
-                    merged_data[field] = item_data[field]
-
-            params = [merged_data.get(field) for field in updatable_fields]
-            now = _now_iso()
-            updated_by = item_data.get("updated_by") or _default_updated_by()
-            params.extend([now, updated_by, item_id])
-            conn.execute(
-                f"UPDATE item SET {set_clause}, updated_at = ?, updated_by = ?, "
-                "version = COALESCE(version, 0) + 1 WHERE item_id = ?",
-                params,
-            )
-            conn.commit()
-            _notify_item_upsert(item_id)
-            return item_id, False
-
-        new_item_id = item_data.get("item_id") or str(uuid.uuid4())
-        rb_id = _ensure_rb_id(item_data.get("rb_id"))
-        now = _now_iso()
-        updated_by = item_data.get("updated_by") or _default_updated_by()
-        insert_fields = [
-            "item_id",
-            "rb_id",
-            *updatable_fields,
-            "qty",
-            "created_at",
-            "updated_at",
-            "updated_by",
-            "version",
-            "last_pushed_version",
-        ]
-        insert_values = [
-            new_item_id,
-            rb_id,
-            *[item_data.get(field) for field in updatable_fields],
-            item_data.get("qty", 0),
-            now,
-            now,
-            updated_by,
-            0,
-            0,
-        ]
-        placeholders = ", ".join("?" for _ in insert_fields)
-        conn.execute(
-            f"INSERT INTO item ({', '.join(insert_fields)}) VALUES ({placeholders})",
-            insert_values,
-        )
-        conn.commit()
-        _notify_item_upsert(new_item_id)
-        return new_item_id, True
-
-
-def insert_item(item_data: Dict[str, Any]) -> str:
-    """Insert a new item into the database and return its identifier."""
-
-    item_id = item_data.get("item_id") or str(uuid.uuid4())
-    rb_id = _ensure_rb_id(item_data.get("rb_id"))
-    now = _now_iso()
-    updated_by = item_data.get("updated_by") or _default_updated_by()
-    insert_fields = [
-        "item_id",
-        "rb_id",
-        *UPDATABLE_FIELDS,
-        "qty",
-        "created_at",
-        "updated_at",
-        "updated_by",
-        "version",
-        "last_pushed_version",
-    ]
-    insert_values = [
-        item_id,
-        rb_id,
-        *[item_data.get(field) for field in UPDATABLE_FIELDS],
-        item_data.get("qty", 0),
-        now,
-        now,
-        updated_by,
-        0,
-        0,
-    ]
-    placeholders = ", ".join("?" for _ in insert_fields)
-
-    with get_connection() as conn:
-        conn.execute(
-            f"INSERT INTO item ({', '.join(insert_fields)}) VALUES ({placeholders})",
-            insert_values,
-        )
-        conn.commit()
-
-    return item_id
+def upsert_item(item_data: Mapping[str, Any]) -> Tuple[str, bool]:
+    return _DATASTORE.upsert_item(item_data)
 
 
 def delete_item(item_id: str) -> None:
-    """Remove an item from the database."""
-
-    now = _now_iso()
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE item SET status = 'deleted', updated_at = ?, version = COALESCE(version, 0) + 1 "
-            "WHERE item_id = ?",
-            (now, item_id),
-        )
-        conn.commit()
-
-    _notify_item_upsert(item_id)
+    _DATASTORE.delete_item(item_id)
 
 
-def _row_to_sync_payload(row: sqlite3.Row) -> Dict[str, Any]:
-    """Convert a database row to the sync payload structure."""
-
-    def _clean(value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
-    payload: Dict[str, Any] = {
-        "id": row["item_id"],
-        "rug_no": _clean(row["rug_no"]) or "",
-        "sku": _clean(row["upc"]) or "",
-        "collection": _clean(row["collection"]) or "",
-        "size": _clean(row["st_size"]) or "",
-        "price": _clean(row["retail"]) or "",
-        "qty": int(row["qty"]) if row["qty"] is not None else 0,
-        "updated_at": row["updated_at"],
-        "version": int(row["version"]) if row["version"] is not None else 1,
-    }
-    return payload
+def fetch_distinct_values(field: str) -> List[str]:
+    values: List[str] = []
+    for item in fetch_items():
+        value = item.get(field)
+        if value and value not in values:
+            values.append(value)
+    return values
 
 
-def fetch_item_for_sync(item_id: str) -> Optional[Dict[str, Any]]:
-    """Return a single item row formatted for synchronisation."""
-
-    query = (
-        "SELECT item_id, rug_no, upc, collection, st_size, retail, qty, updated_at, version "
-        "FROM item WHERE item_id = ?"
-    )
-
-    with get_connection() as conn:
-        cursor = conn.execute(query, (item_id,))
-        row = cursor.fetchone()
-        return _row_to_sync_payload(row) if row else None
+def refresh_from_remote() -> bool:
+    return _DATASTORE.refresh()
 
 
-def fetch_items_for_sync_snapshot() -> List[Dict[str, Any]]:
-    """Return all non-deleted items formatted for synchronisation."""
-
-    query = (
-        "SELECT item_id, rug_no, upc, collection, st_size, retail, qty, updated_at, version "
-        "FROM item WHERE COALESCE(status, 'in_stock') != 'deleted'"
-    )
-
-    with get_connection() as conn:
-        cursor = conn.execute(query)
-        rows = cursor.fetchall()
-    return [_row_to_sync_payload(row) for row in rows]
+def is_online() -> bool:
+    return _DATASTORE.is_online()
 
 
-def get_max_item_updated_at() -> Optional[str]:
-    """Return the most recent ``updated_at`` value tracked by the items table."""
-
-    query = "SELECT MAX(updated_at) FROM item"
-    with get_connection() as conn:
-        cursor = conn.execute(query)
-        result = cursor.fetchone()
-        if not result:
-            return None
-        value = result[0]
-        if not value:
-            return None
-        text = str(value).strip()
-        return text or None
-
-
-def apply_remote_sync_row(row: Dict[str, Any]) -> None:
-    """Apply a row received from Google Sheets to the local database."""
-
-    item_id = row["id"]
-    now = row.get("updated_at") or _now_iso()
-    version = int(row.get("version") or 1)
-    qty_value = row.get("qty")
-    try:
-        qty = int(qty_value) if qty_value is not None else 0
-    except (TypeError, ValueError):
-        qty = 0
-
-    def _normalise(value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
-    values = (
-        _normalise(row.get("rug_no")),
-        _normalise(row.get("sku")),
-        _normalise(row.get("collection")),
-        _normalise(row.get("size")),
-        _normalise(row.get("price")),
-        qty,
-        now,
-        version,
-        item_id,
-    )
-
-    insert_values = (
-        item_id,
-        values[0],
-        values[1],
-        values[2],
-        values[3],
-        values[4],
-        qty,
-        now,
-        now,
-        version,
-    )
-
-    with get_connection() as conn:
-        cursor = conn.execute("SELECT 1 FROM item WHERE item_id = ?", (item_id,))
-        if cursor.fetchone():
-            conn.execute(
-                """
-                UPDATE item
-                SET rug_no = ?, upc = ?, collection = ?, st_size = ?, retail = ?, qty = ?,
-                    updated_at = ?, version = ?
-                WHERE item_id = ?
-                """,
-                values,
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO item (
-                    item_id, rug_no, upc, collection, st_size, retail, qty,
-                    created_at, updated_at, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                insert_values,
-            )
-        conn.commit()
-
-    _notify_item_upsert(item_id)
-
-
-def bump_item_version(item_id: str) -> None:
-    """Increment an item's version and touch the update timestamp."""
-
-    now = _now_iso()
-    updated_by = _default_updated_by()
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE item SET version = COALESCE(version, 0) + 1, updated_at = ?, updated_by = ? WHERE item_id = ?",
-            (now, updated_by, item_id),
-        )
-        conn.commit()
-
-    _notify_item_upsert(item_id)
-
-
-def generate_item_id() -> str:
-    """Generate a short unique identifier for a new item."""
-
-    return f"ITEM-{uuid.uuid4().hex[:8].upper()}"
-
-
-def _normalise_customer_payload(data: Mapping[str, Any]) -> Dict[str, Optional[str]]:
-    payload: Dict[str, Optional[str]] = {}
-    for field in CUSTOMER_FIELDS:
-        value = data.get(field)
-        if value is None:
-            payload[field] = None
-            continue
-        text = str(value).strip()
-        payload[field] = text or None
-    full_name = (payload.get("full_name") or "").strip()
-    if not full_name:
-        raise ValueError("full_name is required")
-    payload["full_name"] = full_name
-    return payload
-
-
-def create_customer(customer_data: Mapping[str, Any]) -> int:
-    payload = _normalise_customer_payload(customer_data)
-    now = _now_iso()
-    values = [payload.get(field) for field in CUSTOMER_FIELDS]
-    with get_connection() as conn:
-        cursor = conn.execute(
-            f"""
-            INSERT INTO customers ({', '.join(CUSTOMER_FIELDS)}, created_at, updated_at)
-            VALUES ({', '.join('?' for _ in CUSTOMER_FIELDS)}, ?, ?)
-            """,
-            (*values, now, now),
-        )
-        conn.commit()
-        customer_id = cursor.lastrowid
-    if customer_id is None:
-        raise RuntimeError("Failed to insert customer")
-    return int(customer_id)
-
-
-def update_customer(customer_id: int, customer_data: Mapping[str, Any]) -> None:
-    payload = _normalise_customer_payload(customer_data)
-    now = _now_iso()
-    assignments = ", ".join(f"{field} = ?" for field in CUSTOMER_FIELDS)
-    params = [payload.get(field) for field in CUSTOMER_FIELDS]
-    params.extend([now, int(customer_id)])
-    with get_connection() as conn:
-        cursor = conn.execute(
-            f"UPDATE customers SET {assignments}, updated_at = ? WHERE id = ?",
-            params,
-        )
-        if cursor.rowcount == 0:
-            raise ValueError(f"Customer {customer_id} not found")
-        conn.commit()
-
-
-def upsert_customer(customer_data: Mapping[str, Any]) -> int:
-    customer_id = customer_data.get("id")
-    if customer_id:
-        update_customer(int(customer_id), customer_data)
-        return int(customer_id)
-    return create_customer(customer_data)
-
-
-def fetch_customer(customer_id: int) -> Optional[Dict[str, Any]]:
-    query = f"SELECT {', '.join(CUSTOMER_SELECT_FIELDS)} FROM customers WHERE id = ?"
-    with get_connection() as conn:
-        cursor = conn.execute(query, (int(customer_id),))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+def last_sync_error() -> Optional[str]:
+    return _DATASTORE.last_error()
 
 
 def fetch_customers(search: Optional[str] = None) -> List[Dict[str, Any]]:
-    query = f"SELECT {', '.join(CUSTOMER_SELECT_FIELDS)} FROM customers"
-    params: List[Any] = []
-    if search:
-        text = f"%{search.lower()}%"
-        query += (
-            " WHERE LOWER(full_name) LIKE ? OR LOWER(COALESCE(phone, '')) LIKE ?"
-            " OR LOWER(COALESCE(email, '')) LIKE ?"
-        )
-        params.extend([text, text, text])
-    query += " ORDER BY LOWER(full_name)"
-    with get_connection() as conn:
-        cursor = conn.execute(query, params)
-        rows = cursor.fetchall()
-    return [dict(row) for row in rows]
+    return _DATASTORE.list_customers(search)
 
 
-def fetch_customers_for_sheet() -> List[Dict[str, Any]]:
-    return fetch_customers()
+def fetch_customer(customer_id: str) -> Optional[Dict[str, Any]]:
+    return _DATASTORE.get_customer(customer_id)
+
+
+def create_customer(customer_data: Mapping[str, Any]) -> str:
+    return _DATASTORE.upsert_customer(customer_data)
+
+
+def update_customer(customer_id: str, customer_data: Mapping[str, Any]) -> None:
+    payload = dict(customer_data)
+    payload["id"] = customer_id
+    _DATASTORE.upsert_customer(payload)
 
 
 def mark_item_sold(
     item_id: str,
     *,
-    customer_id: int,
-    sale_price: Optional[Any] = None,
-    note: Optional[str] = None,
     sold_at: Optional[str] = None,
+    sale_price: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    note: Optional[str] = None,
 ) -> None:
-    if not item_id:
-        raise ValueError("item_id is required")
-    if customer_id is None:
-        raise ValueError("customer_id is required")
-
-    try:
-        numeric_price = None if sale_price in (None, "") else float(sale_price)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("sale_price must be numeric") from exc
-
-    sold_timestamp = sold_at or _now_iso()
-    now = _now_iso()
-    updated_by = _default_updated_by()
-    cleaned_note = (note or "").strip() or None
-
-    with get_connection() as conn:
-        cursor = conn.execute(
-            """
-            UPDATE item
-            SET status = 'sold',
-                sold_at = ?,
-                customer_id = ?,
-                sale_price = ?,
-                sale_note = ?,
-                qty = 0,
-                updated_at = ?,
-                updated_by = ?,
-                version = COALESCE(version, 0) + 1
-            WHERE item_id = ?
-            """,
-            (
-                sold_timestamp,
-                int(customer_id),
-                numeric_price,
-                cleaned_note,
-                now,
-                updated_by,
-                item_id,
-            ),
-        )
-        if cursor.rowcount == 0:
-            raise ValueError(f"Item {item_id} not found")
-        conn.commit()
-
-    _notify_item_upsert(item_id)
-
-
-def get_sales_summary(days: Optional[int] = None) -> Dict[str, float]:
-    base_query = (
-        "SELECT COUNT(*) AS total_count, "
-        "COALESCE(SUM(COALESCE(sale_price, sp, 0)), 0) AS total_revenue "
-        "FROM item WHERE LOWER(COALESCE(status, '')) = 'sold'"
-    )
-    params: List[Any] = []
-    if days is not None:
-        start = datetime.utcnow() - timedelta(days=days)
-        params.append(start.replace(microsecond=0).isoformat())
-        base_query += " AND sold_at >= ?"
-
-    with get_connection() as conn:
-        cursor = conn.execute(base_query, params)
-        row = cursor.fetchone()
-
-    count = int(row[0]) if row and row[0] is not None else 0
-    total = float(row[1]) if row and row[1] is not None else 0.0
-    average = total / count if count else 0.0
-    return {"count": count, "total": total, "average": average}
-
-
-def _parse_numeric(value: str) -> Optional[float]:
-    cleaned = value.strip()
-    if not cleaned:
-        return None
-
-    normalized = cleaned.replace(" ", "")
-    try:
-        return float(normalized.replace(",", ""))
-    except ValueError:
-        if "," in normalized and "." not in normalized:
-            try:
-                return float(normalized.replace(",", "."))
-            except ValueError:
-                return None
-        return None
-
-
-def parse_numeric(value: Optional[str]) -> Optional[float]:
-    if value is None:
-        return None
-    return _parse_numeric(str(value))
-
-
-def has_processed_change(change_file: str) -> bool:
-    with get_connection() as conn:
-        cursor = conn.execute(
-            "SELECT 1 FROM processed_changes WHERE change_file = ?",
-            (change_file,),
-        )
-        return cursor.fetchone() is not None
-
-
-def record_processed_change(change_file: str, applied_at: Optional[str] = None) -> None:
-    timestamp = applied_at or datetime.utcnow().strftime(ISO_FORMAT)
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO processed_changes (change_file, applied_at) VALUES (?, ?)",
-            (change_file, timestamp),
-        )
-        conn.commit()
-
-
-def enqueue_sync_job(rb_id: str, payload: Dict[str, Any]) -> int:
-    serialized = json.dumps(payload, ensure_ascii=False)
-    now = _now_iso()
-    with get_connection() as conn:
-        cursor = conn.execute(
-            "INSERT INTO sync_queue (rb_id, payload, created_at) VALUES (?, ?, ?)",
-            (rb_id, serialized, now),
-        )
-        conn.commit()
-        return int(cursor.lastrowid)
-
-
-def count_sync_queue() -> int:
-    with get_connection() as conn:
-        cursor = conn.execute("SELECT COUNT(*) FROM sync_queue")
-        row = cursor.fetchone()
-        return int(row[0]) if row else 0
-
-
-def fetch_sync_queue(limit: int = 100) -> List[Dict[str, Any]]:
-    with get_connection() as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            "SELECT id, rb_id, payload, retries, created_at FROM sync_queue ORDER BY id LIMIT ?",
-            (limit,),
-        )
-        entries: List[Dict[str, Any]] = []
-        for row in cursor.fetchall():
-            payload: Dict[str, Any]
-            try:
-                payload = json.loads(row["payload"])
-            except json.JSONDecodeError:
-                payload = {}
-            entries.append(
-                {
-                    "id": int(row["id"]),
-                    "rb_id": row["rb_id"],
-                    "payload": payload,
-                    "retries": int(row["retries"]),
-                    "created_at": row["created_at"],
-                }
-            )
-        return entries
-
-
-def delete_sync_job(job_id: int) -> None:
-    with get_connection() as conn:
-        conn.execute("DELETE FROM sync_queue WHERE id = ?", (job_id,))
-        conn.commit()
-
-
-def increment_sync_retry(job_id: int) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE sync_queue SET retries = retries + 1, created_at = ? WHERE id = ?",
-            (_now_iso(), job_id),
-        )
-        conn.commit()
-
-
-def mark_items_synced(updates: Mapping[str, str]) -> None:
-    if not updates:
-        return
-    with get_connection() as conn:
-        for rug_no, last_updated in updates.items():
-            conn.execute(
-                "UPDATE item SET last_pushed_version = COALESCE(version, 0), updated_at = ? WHERE rug_no = ?",
-                (last_updated, rug_no),
-            )
-        conn.commit()
-
-
-def set_item_remote_timestamp(item_id: str, timestamp: str) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE item SET updated_at = ?, last_pushed_version = COALESCE(version, 0) WHERE item_id = ?",
-            (timestamp, item_id),
-        )
-        conn.commit()
-
-
-def has_processed_stock_txn(txn_id: str) -> bool:
-    with get_connection() as conn:
-        cursor = conn.execute(
-            "SELECT 1 FROM processed_stock_txns WHERE txn_id = ?",
-            (txn_id,),
-        )
-        return cursor.fetchone() is not None
-
-
-def record_processed_stock_txn(txn_id: str, applied_at: Optional[str] = None) -> None:
-    timestamp = applied_at or datetime.utcnow().strftime(ISO_FORMAT)
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO processed_stock_txns (txn_id, applied_at) VALUES (?, ?)",
-            (txn_id, timestamp),
-        )
-        conn.commit()
-
-
-def log_conflict(
-    change_file: str,
-    item_id: Optional[str],
-    reason: str,
-    payload: Optional[Dict[str, Any]] = None,
-) -> None:
-    payload_json = None
-    if payload is not None:
-        try:
-            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        except TypeError:
-            payload_json = json.dumps({"repr": repr(payload)})
-
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO conflicts (change_file, item_id, reason, payload, created_at, resolved)
-            VALUES (?, ?, ?, ?, ?, 0)
-            """,
-            (
-                change_file,
-                item_id,
-                reason,
-                payload_json,
-                datetime.utcnow().strftime(ISO_FORMAT),
-            ),
-        )
-        conn.commit()
-
-
-def fetch_conflicts(resolved: Optional[bool] = None) -> List[Dict[str, Any]]:
-    query = "SELECT * FROM conflicts"
-    params: List[object] = []
-    if resolved is not None:
-        query += " WHERE resolved = ?"
-        params.append(1 if resolved else 0)
-    query += " ORDER BY datetime(created_at) DESC"
-
-    with get_connection() as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(query, params)
-        return [dict(row) for row in cursor.fetchall()]
-
-
-def count_conflicts(resolved: Optional[bool] = None) -> int:
-    query = "SELECT COUNT(*) FROM conflicts"
-    params: List[object] = []
-    if resolved is not None:
-        query += " WHERE resolved = ?"
-        params.append(1 if resolved else 0)
-
-    with get_connection() as conn:
-        cursor = conn.execute(query, params)
-        row = cursor.fetchone()
-        return int(row[0]) if row else 0
-
-
-def resolve_conflict(conflict_id: int) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE conflicts SET resolved = 1 WHERE id = ?",
-            (conflict_id,),
-        )
-        conn.commit()
-
-
-_DIMENSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
-
-
-def _extract_dimensions(value: Optional[str]) -> Optional[Tuple[float, float]]:
-    if not value:
-        return None
-
-    cleaned = (
-        value.replace("×", "x")
-        .replace("X", "x")
-        .replace("'", " ")
-        .replace("\"", " ")
-        .replace("ft", " ")
-        .replace("FT", " ")
-    )
-    cleaned = cleaned.replace(",", ".")
-    numbers = _DIMENSION_PATTERN.findall(cleaned)
-    if len(numbers) < 2:
-        return None
-
-    try:
-        width = float(numbers[0])
-        height = float(numbers[1])
-    except ValueError:
-        return None
-
-    return width, height
-
-
-def calculate_area(
-    st_size: Optional[str],
-    area_value: Optional[str] = None,
-    a_size: Optional[str] = None,
-) -> Optional[float]:
-    """Calculate the area from the provided values following master sheet rules."""
-
-    for raw in (area_value,):
-        if raw is None:
-            continue
-        parsed = _parse_numeric(str(raw))
-        if parsed is not None:
-            return parsed
-
-    for dimensions_source in (st_size, a_size):
-        dimensions = _extract_dimensions(dimensions_source)
-        if dimensions:
-            width, height = dimensions
-            return round(width * height, 4)
-
-    return None
-
-
-def _ensure_columns(conn: sqlite3.Connection) -> List[str]:
-    cursor = conn.execute("PRAGMA table_info(item)")
-    existing_columns = {row[1] for row in cursor.fetchall()}
-
-    added_columns: List[str] = []
-
-    for column, definition in TABLE_COLUMNS:
-        if column not in existing_columns:
-            column_definition = definition
-            needs_unique_index = False
-
-            if "UNIQUE" in definition.upper():
-                # SQLite cannot add a column with a UNIQUE constraint using ALTER TABLE.
-                # Strip the UNIQUE constraint and enforce it with an index instead.
-                parts = [part for part in definition.split() if part.upper() != "UNIQUE"]
-                column_definition = " ".join(parts)
-                needs_unique_index = True
-
-            conn.execute(f"ALTER TABLE item ADD COLUMN {column} {column_definition}")
-
-            if needs_unique_index:
-                index_name = f"idx_item_{column}_unique"
-                conn.execute(
-                    f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON item({column})"
-                )
-            existing_columns.add(column)
-            added_columns.append(column)
-
-    if added_columns:
-        readable_names = [COLUMN_DISPLAY_NAMES.get(name, name) for name in added_columns]
-        logger.info(
-            "Added missing inventory columns: %s",
-            ", ".join(readable_names),
-        )
-    else:
-        logger.debug("Inventory columns are up to date.")
-
-    # Normalise timestamps and versions for existing rows
-    conn.execute("UPDATE item SET created_at = REPLACE(created_at, ' ', 'T') WHERE created_at LIKE '% %'")
-    conn.execute("UPDATE item SET updated_at = REPLACE(updated_at, ' ', 'T') WHERE updated_at LIKE '% %'")
-
-    now = _now_iso()
-    conn.execute("UPDATE item SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now,))
-    conn.execute("UPDATE item SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''", (now,))
-    conn.execute("UPDATE item SET updated_by = COALESCE(NULLIF(updated_by, ''), ?)", (_default_updated_by(),))
-    conn.execute("UPDATE item SET version = COALESCE(version, 0)")
-    conn.execute("UPDATE item SET last_pushed_version = COALESCE(last_pushed_version, 0)")
-
-    cursor = conn.execute("SELECT item_id, rb_id FROM item")
-    for row in cursor.fetchall():
-        if not row[1]:
-            conn.execute("UPDATE item SET rb_id = ? WHERE item_id = ?", (str(uuid.uuid4()), row[0]))
-    conn.commit()
-    return added_columns
+    _DATASTORE.mark_item_sold(item_id, sold_at=sold_at, sale_price=sale_price, customer_id=customer_id, note=note)
+
+
+def get_sales_summary(days: Optional[int] = None) -> Dict[str, float]:  # days retained for compatibility
+    return _DATASTORE.sales_summary()
+
+
+def generate_item_id() -> str:
+    return str(uuid.uuid4())
+
+
+__all__ = [
+    "MASTER_SHEET_COLUMNS",
+    "MASTER_SHEET_FIELDS",
+    "NUMERIC_FIELDS",
+    "UPDATABLE_FIELDS",
+    "add_item_upsert_listener",
+    "remove_item_upsert_listener",
+    "initialize_database",
+    "ensure_inventory_columns",
+    "fetch_items",
+    "fetch_item",
+    "upsert_item",
+    "delete_item",
+    "fetch_distinct_values",
+    "fetch_customers",
+    "fetch_customer",
+    "create_customer",
+    "update_customer",
+    "mark_item_sold",
+    "get_sales_summary",
+    "parse_numeric",
+    "calculate_area",
+    "generate_item_id",
+]

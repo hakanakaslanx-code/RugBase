@@ -3,6 +3,7 @@ dependency_loader.bootstrap()
 
 import tkinter as tk
 from tkinter import messagebox
+from typing import Optional
 
 import db
 from core import deps_bootstrap
@@ -11,6 +12,7 @@ from core.logging_config import configure_logging
 from core.version import __version__
 from core.single_instance import SingleInstanceError, acquire_instance_lock
 from ui_main import MainWindow
+from core.sheets_client import SheetsClientError
 
 
 def _notify_already_running() -> None:
@@ -37,11 +39,24 @@ def main() -> None:
         return
 
     with instance_lock:
-        column_changes = db.initialize_database()
+        initial_online = True
+        init_error: Optional[str] = None
+        try:
+            column_changes = db.initialize_database()
+        except SheetsClientError as exc:
+            column_changes = []
+            initial_online = False
+            init_error = str(exc)
+
         root = tk.Tk()
         root.title(f"RugBase Inventory v{__version__}")
         root.geometry("1000x600")
-        MainWindow(root, column_changes=column_changes)
+        MainWindow(
+            root,
+            column_changes=column_changes,
+            initial_online=initial_online,
+            initial_error=init_error,
+        )
         root.mainloop()
 
 

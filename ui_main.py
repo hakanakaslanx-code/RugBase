@@ -10,6 +10,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 from typing import Any, Callable, Dict, List, Optional, Sequence
+import shutil
+from pathlib import Path
 
 import db
 from core import app_paths, importer, updater
@@ -19,10 +21,10 @@ from core.version import __version__
 from ui_item_card import ItemCardWindow
 from ui_label_generator import LabelGeneratorWindow
 from core.excel import Workbook
-from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
-from ui.sync_panel import SyncPanel
 from ttkbootstrap import Style
-from settings import load_google_sync_settings
+from settings import DEFAULT_CREDENTIALS_PATH, load_google_sync_settings, save_google_sync_settings
+from core.google_credentials import CredentialsFileInvalidError, ensure_service_account_file
+from core.sheets_client import SheetsClientError
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,14 @@ class ScrollableFrame(ttk.Frame):
 
 
 class MainWindow:
-    def __init__(self, root: tk.Tk, column_changes: Optional[List[str]] = None) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        column_changes: Optional[List[str]] = None,
+        *,
+        initial_online: bool = True,
+        initial_error: Optional[str] = None,
+    ) -> None:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
         self.current_user = os.getenv("USERNAME") or os.getenv("USER") or "operator"
@@ -119,13 +128,14 @@ class MainWindow:
         self._startup_column_changes = list(column_changes or [])
         self._auto_save_job: Optional[str] = None
         self._offline_controls: List[tk.Widget] = []
-        self._offline = True
+        self._offline = not initial_online
         self._sync_detail_default = self.sync_detail_var.get()
         self._conflict_toast_job: Optional[str] = None
         self.sync_manager = InventorySyncManager(status_callback=self._handle_sync_status)
+        self._initial_error = initial_error
         self._configure_style()
         self._create_widgets()
-        self._apply_offline_state(True)
+        self._apply_offline_state(not initial_online)
         self.load_items()
         self.load_customers()
         self.root.bind("<Control-l>", self.on_open_label_generator)
@@ -135,6 +145,7 @@ class MainWindow:
         self._maybe_show_startup_column_changes()
         self._update_user_status()
         self._start_sync_workers()
+        self._update_connection_view()
 
     def _start_sync_workers(self) -> None:
         def _bootstrap() -> None:
@@ -147,6 +158,8 @@ class MainWindow:
     def _after_initial_sync(self, online: bool) -> None:
         self._apply_offline_state(not online)
         self.load_items()
+        self.load_customers()
+        self._update_connection_view()
 
     def _apply_offline_state(self, offline: bool) -> None:
         self._offline = offline
@@ -197,6 +210,7 @@ class MainWindow:
         self.last_sync_var.set(status.last_sync or "—")
         self._apply_offline_state(not online)
         self._update_user_status()
+        self._update_connection_view()
         if status.conflicts:
             for rug_no in status.conflicts:
                 self._show_conflict_message(rug_no)
@@ -440,9 +454,6 @@ class MainWindow:
                 highlightbackground=palette["border"],
             )
 
-        if hasattr(self, "sync_panel"):
-            self.sync_panel.apply_theme(palette)
-
         if self.label_window and self.label_window.window.winfo_exists():
             self.label_window.apply_theme(palette)
 
@@ -528,6 +539,7 @@ class MainWindow:
             "Configure RugBase, manage automation, and review system health.",
         )
 
+        self._build_connection_overlay()
         self.show_view("dashboard")
 
     def _build_sidebar(self) -> None:
@@ -584,6 +596,103 @@ class MainWindow:
             self.nav_labels[key] = nav_label
 
         self._update_nav_state()
+
+    def _build_connection_overlay(self) -> None:
+        self.connection_overlay = tk.Frame(self.root, background="#f5f6f8")
+        inner = ttk.Frame(self.connection_overlay, padding=48, style="Card.TFrame")
+        inner.pack(expand=True, padx=40, pady=40)
+
+        ttk.Label(inner, text="Google Sheets bağlantısı gerekli", style="Hero.TLabel").pack(
+            anchor="center", pady=(0, 12)
+        )
+        ttk.Label(
+            inner,
+            text=(
+                "RugBase artık tüm verileri Google Sheets üzerinden yönetiyor."
+                " Devam etmek için geçerli bir service account JSON dosyası yükleyin."
+            ),
+            wraplength=480,
+            justify=tk.CENTER,
+        ).pack(anchor="center", pady=(0, 16))
+
+        self.connection_status_var = tk.StringVar(value="Bağlantı bekleniyor")
+        ttk.Label(inner, textvariable=self.connection_status_var, style="Warning.TLabel").pack(
+            anchor="center", pady=(0, 16)
+        )
+
+        button_row = ttk.Frame(inner)
+        button_row.pack(anchor="center")
+        ttk.Button(button_row, text="JSON yükle", command=self._on_upload_credentials).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(button_row, text="Tekrar dene", command=self.on_sync_now).pack(side=tk.LEFT)
+
+        ttk.Label(
+            inner,
+            text=f"Hedef: {DEFAULT_CREDENTIALS_PATH}",
+            style="Hint.TLabel",
+        ).pack(anchor="center", pady=(16, 0))
+
+        self.connection_overlay.place_forget()
+
+    def _update_connection_view(self) -> None:
+        online = db.is_online()
+        if online:
+            self.connection_overlay.place_forget()
+            self._apply_offline_state(False)
+            self._sync_detail_default = self.sync_detail_var.get()
+            return
+
+        error = self._initial_error or db.last_sync_error()
+        if error:
+            self.connection_status_var.set(error)
+        else:
+            self.connection_status_var.set("credentials.json yüklenmeli.")
+        self.connection_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.connection_overlay.lift()
+        self._apply_offline_state(True)
+
+    def _on_upload_credentials(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Service account JSON seç",
+            filetypes=(("JSON", "*.json"), ("Tüm dosyalar", "*.*")),
+        )
+        if not path:
+            return
+        source = Path(path)
+        try:
+            ensure_service_account_file(source)
+        except CredentialsFileInvalidError as exc:
+            messagebox.showerror("Geçersiz JSON", str(exc))
+            return
+
+        target = Path(DEFAULT_CREDENTIALS_PATH)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(source, target)
+            ensure_service_account_file(target)
+        except (OSError, CredentialsFileInvalidError) as exc:
+            messagebox.showerror("Dosya hatası", str(exc))
+            return
+
+        settings = load_google_sync_settings()
+        settings.credential_path = str(target)
+        save_google_sync_settings(settings)
+
+        try:
+            db.initialize_database()
+        except SheetsClientError as exc:
+            self._initial_error = str(exc)
+            self._update_connection_view()
+            messagebox.showerror("Bağlantı hatası", str(exc))
+            return
+
+        self._initial_error = None
+        self.sync_manager.sync_now()
+        self.load_items()
+        self.load_customers()
+        self._update_connection_view()
+        messagebox.showinfo("Başarılı", "Google Sheets bağlantısı güncellendi.")
 
     def _draw_vertical_gradient(
         self, canvas: tk.Canvas, width: int, height: int, start_color: str, end_color: str
@@ -1085,12 +1194,16 @@ class MainWindow:
         self.label_window = None
 
     def open_consignment_modal(self) -> None:
-        self.log_activity("Opened consignment out")
-        ConsignmentModal(self.root, self.current_user)
+        messagebox.showinfo(
+            "Consignment",
+            "Consignment işlemleri Google Sheets senkronizasyonuna taşınmadı.",
+        )
 
     def open_return_modal(self) -> None:
-        self.log_activity("Opened consignment return")
-        ReturnModal(self.root, self.current_user)
+        messagebox.showinfo(
+            "Consignment",
+            "Consignment işlemleri Google Sheets senkronizasyonuna taşınmadı.",
+        )
 
     def on_check_columns(self) -> None:
         try:
@@ -1114,8 +1227,10 @@ class MainWindow:
         self.log_activity("Column audit complete")
 
     def open_consignment_list(self) -> None:
-        self.log_activity("Viewed consignments")
-        ConsignmentListWindow(self.root)
+        messagebox.showinfo(
+            "Consignment",
+            "Consignment işlemleri Google Sheets senkronizasyonuna taşınmadı.",
+        )
 
     def get_selected_item_id(self) -> Optional[str]:
         selected = self.tree.selection()
@@ -1268,9 +1383,16 @@ class MainWindow:
             text="Synchronize with Google Sheets, review history, and manage backups.",
             style="Hint.TLabel",
         ).pack(anchor=tk.W, pady=(2, 12))
-
-        self.sync_panel = SyncPanel(container)
-        self.sync_panel.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(
+            container,
+            text="Google Sheets'i Aç",
+            command=self.on_open_sheet,
+        ).pack(anchor=tk.W, pady=(0, 12))
+        ttk.Button(
+            container,
+            text="credentials.json yükle",
+            command=self._on_upload_credentials,
+        ).pack(anchor=tk.W)
 
     def _build_placeholder_view(
         self, container: ttk.Frame, title: str, description: str
@@ -1725,11 +1847,6 @@ class MainWindow:
             )
 
     def _on_close(self) -> None:
-        if hasattr(self, "sync_panel"):
-            try:
-                self.sync_panel.shutdown()
-            except Exception:  # pragma: no cover - defensive cleanup
-                pass
         if hasattr(self, "sync_manager"):
             try:
                 self.sync_manager.shutdown()
