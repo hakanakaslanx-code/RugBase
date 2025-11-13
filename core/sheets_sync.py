@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -319,8 +320,20 @@ def get_client(credentials_path: str, payload: Optional[Mapping[str, object]] = 
     return build("sheets", "v4", credentials=credentials, cache_discovery=False)  # type: ignore[call-arg]
 
 
+_SIMPLE_TITLE_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
 def _quote_title(title: str) -> str:
-    escaped = (title or "").replace("'", "''")
+    """Return a worksheet title safely formatted for A1 notation."""
+
+    normalised = (title or "").strip()
+    if not normalised:
+        return "''"
+
+    if _SIMPLE_TITLE_RE.fullmatch(normalised):
+        return normalised
+
+    escaped = normalised.replace("'", "''")
     return f"'{escaped}'"
 
 
