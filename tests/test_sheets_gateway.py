@@ -5,8 +5,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import sheets_gateway
@@ -109,26 +107,25 @@ def test_get_rows_converts_numeric_and_blank_cells() -> None:
     data = [
         [
             "R1",
-            "SKU-1",
-            "Modern Rug",
+            "Modern Collection",
             "Heritage",
-            "Classic",
-            "Turkey",
-            "Wool",
             "Red",
+            "Cream",
             "8x10",
-            "120",
-            "180",
+            "96x120",
+            "120.5",
+            "Handmade",
+            "Rectangle",
+            "Classic",
+            "rug.jpg",
+            "Turkey",
             "1999.5",
+            "1899.5",
             "2499.5",
             "900",
-            "Warehouse",
-            "Available",
-            "2024-01-01T10:00:00Z",
+            "Wool",
             "2024-01-02T11:00:00Z",
-            "",
-            "123",
-            "",
+            "TRUE",
         ]
     ]
     service = _FakeService([header] + data)
@@ -138,107 +135,98 @@ def test_get_rows_converts_numeric_and_blank_cells() -> None:
     assert rows == [
         {
             "RugNo": "R1",
-            "SKU": "SKU-1",
-            "Title": "Modern Rug",
-            "Collection": "Heritage",
+            "Collection": "Modern Collection",
+            "Design": "Heritage",
+            "Ground": "Red",
+            "Border": "Cream",
+            "ASize": "8x10",
+            "SSize": "96x120",
+            "Area": 120.5,
+            "Type": "Handmade",
+            "Shape": "Rectangle",
             "Style": "Classic",
+            "ImageFileName": "rug.jpg",
             "Origin": "Turkey",
-            "Material": "Wool",
-            "Color": "Red",
-            "Size": "8x10",
-            "WidthIn": 120.0,
-            "LengthIn": 180.0,
-            "Price": 1999.5,
+            "Retail": 1999.5,
+            "SP": 1899.5,
             "MSRP": 2499.5,
             "Cost": 900.0,
-            "Location": "Warehouse",
-            "Status": "Available",
-            "CreatedAt": "2024-01-01T10:00:00Z",
-            "UpdatedAt": "2024-01-02T11:00:00Z",
-            "SoldAt": None,
-            "CustomerId": 123,
-            "Notes": None,
+            "Content": "Wool",
+            "LastUpdated": "2024-01-02T11:00:00Z",
+            "Deleted": True,
         }
     ]
 
 
 def test_upsert_rows_writes_headers_and_chunks_batches() -> None:
     service = _FakeService()
-    rows = [_row(RugNo=f"R{index}", Status="Available") for index in range(1205)]
+    rows = [
+        _row(RugNo=f"R{index}", LastUpdated="2024-01-01T00:00:00Z", Deleted=False)
+        for index in range(1205)
+    ]
 
     sheets_gateway.upsert_rows(rows, service=service)
 
     assert service.sheet_rows[0] == list(sheets_gateway.REQUIRED_HEADERS)
     assert len(service.batch_requests) >= 1
     body = service.batch_requests[-1]
-    assert len(body["data"]) == 2  # 1206 rows (header + data) should be split across two chunks
+    assert all(len(entry.get("values", [])) <= 50 for entry in body["data"])  # 1000 cells limit
 
 
 def test_upsert_rows_prefers_rugno_for_matching() -> None:
     header = list(sheets_gateway.REQUIRED_HEADERS)
-    existing = [
-        header,
-        [
-            "R-1",
-            "SKU-1",
-            "Old Title",
-            "Collect",
-            "Style",
-            "Origin",
-            "Material",
-            "Color",
-            "Size",
-            "10",
-            "12",
-            "100",
-            "200",
-            "50",
-            "A1",
-            "Available",
-            "2024-01-01T00:00:00Z",
-            "2024-01-01T00:00:00Z",
-            "",
-            "",
-            "",
-        ],
-    ]
+    base_row = _row(
+        RugNo="R-1",
+        Collection="Vintage",
+        Design="Old Title",
+        Ground="Blue",
+        Border="Ivory",
+        ASize="8x10",
+        SSize="96x120",
+        Area="120",
+        Type="Handmade",
+        Shape="Rectangle",
+        Style="Classic",
+        ImageFileName="old.jpg",
+        Origin="Turkey",
+        Retail="1999",
+        SP="1899",
+        MSRP="2499",
+        Cost="900",
+        Content="Wool",
+        LastUpdated="2024-01-01T00:00:00Z",
+        Deleted=False,
+    )
+    existing = [header, [base_row.get(column) for column in header]]
     service = _FakeService(existing)
 
     sheets_gateway.upsert_rows(
         [
             {
                 "RugNo": "R-1",
-                "SKU": "SKU-NEW",
-                "Title": "Updated",
-                "Status": "Reserved",
-                "UpdatedAt": "2024-02-01T12:00:00Z",
+                "Design": "Updated",
+                "LastUpdated": "2024-02-01T12:00:00Z",
             }
         ],
         service=service,
     )
 
-    assert service.sheet_rows[1][2] == "Updated"  # Title column
-    assert service.sheet_rows[1][15] == "Reserved"
+    design_index = header.index("Design")
+    updated_timestamp_index = header.index("LastUpdated")
+    assert service.sheet_rows[1][design_index] == "Updated"
+    assert service.sheet_rows[1][updated_timestamp_index] == "2024-02-01T12:00:00Z"
 
 
 def test_delete_rows_removes_matching_entries() -> None:
     header = list(sheets_gateway.REQUIRED_HEADERS)
-    data = [
-        header,
-        list(_row(RugNo="R-1", Status="Available").values()),
-        list(_row(SKU="SKU-2", Status="Sold").values()),
-    ]
+    first = _row(RugNo="R-1", LastUpdated="2024-01-01T00:00:00Z", Deleted=False)
+    second = _row(RugNo="R-2", LastUpdated="2024-01-01T00:00:00Z", Deleted=False)
+    data = [header, [first.get(column) for column in header], [second.get(column) for column in header]]
     service = _FakeService(data)
 
     sheets_gateway.delete_rows(["R-1"], service=service)
 
     assert len(service.sheet_rows) == 2  # header + remaining row
-    assert service.sheet_rows[1][0] == ""  # RugNo cleared for remaining row
+    assert service.sheet_rows[1][0] == "R-2"
 
-
-def test_upsert_rows_rejects_invalid_status() -> None:
-    service = _FakeService([list(sheets_gateway.REQUIRED_HEADERS)])
-
-    with pytest.raises(sheets_gateway.StatusValidationError):
-        sheets_gateway.upsert_rows([_row(RugNo="R-1", Status="Pending")], service=service)
 

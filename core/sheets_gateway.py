@@ -29,7 +29,7 @@ import getpass
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -53,35 +53,35 @@ SHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
 SHEET_NAME = "Inventory"
 REQUIRED_HEADERS: Tuple[str, ...] = (
     "RugNo",
-    "SKU",
-    "Title",
     "Collection",
+    "Design",
+    "Ground",
+    "Border",
+    "ASize",
+    "SSize",
+    "Area",
+    "Type",
+    "Shape",
     "Style",
+    "ImageFileName",
     "Origin",
-    "Material",
-    "Color",
-    "Size",
-    "WidthIn",
-    "LengthIn",
-    "Price",
+    "Retail",
+    "SP",
     "MSRP",
     "Cost",
-    "Location",
-    "Status",
-    "CreatedAt",
-    "UpdatedAt",
-    "SoldAt",
-    "CustomerId",
-    "Notes",
+    "Content",
+    "LastUpdated",
+    "Deleted",
 )
 
-FLOAT_COLUMNS = {"WidthIn", "LengthIn", "Price", "MSRP", "Cost"}
-INT_COLUMNS = {"CustomerId"}
-DATETIME_COLUMNS = {"CreatedAt", "UpdatedAt", "SoldAt"}
-STATUS_VALUES = {"Available", "Reserved", "Sold", "Out"}
+FLOAT_COLUMNS = {"Area", "Retail", "SP", "MSRP", "Cost"}
+INT_COLUMNS: Set[str] = set()
+DATETIME_COLUMNS = {"LastUpdated"}
+BOOL_COLUMNS = {"Deleted"}
 UPSERT_KEYS = ("RugNo", "SKU")
 
-MAX_ROWS_PER_BATCH = 1000
+MAX_BATCH_CELLS = 1_000
+ROW_FETCH_CHUNK = 2_000
 
 
 class SheetsGatewayError(Exception):
@@ -94,10 +94,6 @@ class MissingDependencyError(SheetsGatewayError):
 
 class CredentialsNotFoundError(SheetsGatewayError):
     """Raised when the expected service account file cannot be located."""
-
-
-class StatusValidationError(SheetsGatewayError):
-    """Raised when a row contains an invalid Status value."""
 
 
 def is_api_available() -> bool:
@@ -139,6 +135,13 @@ def _build_service(credentials=None):
     if credentials is None:
         credentials = _load_credentials()
     return build("sheets", "v4", credentials=credentials, cache_discovery=False)
+
+
+def build_service_from_file(path: str):
+    """Construct a Sheets service using credentials from ``path``."""
+
+    credentials = _load_credentials(Path(path))
+    return _build_service(credentials)
 
 
 def _column_letter(index: int) -> str:
@@ -212,6 +215,19 @@ def _parse_datetime(value: Any) -> Optional[str]:
 def _coerce_from_sheet(header: str, value: Any) -> Any:
     if value == "":
         return None
+    if header in BOOL_COLUMNS:
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "y"}:
+                return True
+            if lowered in {"0", "false", "no", "n"}:
+                return False
+        return bool(value)
+    if header in DATETIME_COLUMNS:
+        try:
+            return _parse_datetime(value)
+        except ValueError:
+            return str(value)
     if header in FLOAT_COLUMNS:
         try:
             return float(value)
@@ -235,12 +251,16 @@ def _coerce_for_sheet(header: str, value: Any) -> Any:
     if header in DATETIME_COLUMNS:
         parsed = _parse_datetime(value)
         return "" if parsed is None else parsed
-    if header == "Status":
+    if header in BOOL_COLUMNS:
         if value in (None, ""):
             return ""
-        if value not in STATUS_VALUES:
-            raise StatusValidationError(f"Invalid status value: {value!r}")
-        return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "y"}:
+                return True
+            if lowered in {"0", "false", "no", "n"}:
+                return False
+        return bool(value)
     if value is None:
         return ""
     return value
@@ -276,14 +296,27 @@ def _ensure_header_row(service, spreadsheet_id: str) -> List[str]:
 
 def _fetch_values(service, spreadsheet_id: str, headers: Sequence[str]) -> List[List[Any]]:
     end_column = _column_letter(len(headers))
-    request = (
-        service.spreadsheets()
-        .values()
-        .get(spreadsheetId=spreadsheet_id, range=f"{SHEET_NAME}!A2:{end_column}")
-    )
-    result = request.execute()
-    values = result.get("values", []) if isinstance(result, dict) else []
-    return [list(row) for row in values]
+    rows: List[List[Any]] = []
+    start_row = 2
+    while True:
+        end_row = start_row + ROW_FETCH_CHUNK - 1
+        request = (
+            service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                range=f"{SHEET_NAME}!A{start_row}:{end_column}{end_row}",
+            )
+        )
+        result = request.execute()
+        values = result.get("values", []) if isinstance(result, dict) else []
+        if not values:
+            break
+        rows.extend(list(map(list, values)))
+        if len(values) < ROW_FETCH_CHUNK:
+            break
+        start_row += ROW_FETCH_CHUNK
+    return rows
 
 
 def _rows_from_values(headers: Sequence[str], values: Sequence[Sequence[Any]]) -> List[Dict[str, Any]]:
@@ -327,9 +360,17 @@ def _format_rows_for_sheet(headers: Sequence[str], rows: Sequence[Mapping[str, A
     return formatted
 
 
-def _chunk_rows(matrix: Sequence[List[Any]], chunk_size: int = MAX_ROWS_PER_BATCH) -> Iterator[Tuple[int, List[List[Any]]]]:
-    for start in range(0, len(matrix), chunk_size):
-        yield start, [list(row) for row in matrix[start : start + chunk_size]]
+def _chunk_rows(
+    matrix: Sequence[List[Any]], max_cells: int = MAX_BATCH_CELLS
+) -> Iterator[Tuple[int, List[List[Any]]]]:
+    if not matrix:
+        return
+    column_count = max(len(row) for row in matrix)
+    if column_count == 0:
+        column_count = 1
+    rows_per_chunk = max(1, max_cells // column_count)
+    for start in range(0, len(matrix), rows_per_chunk):
+        yield start, [list(row) for row in matrix[start : start + rows_per_chunk]]
 
 
 def _write_sheet(service, spreadsheet_id: str, headers: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> None:
@@ -448,8 +489,8 @@ __all__ = [
     "SheetsGatewayError",
     "MissingDependencyError",
     "CredentialsNotFoundError",
-    "StatusValidationError",
     "is_api_available",
+    "build_service_from_file",
     "get_rows",
     "upsert_rows",
     "delete_rows",

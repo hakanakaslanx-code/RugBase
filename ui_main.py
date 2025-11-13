@@ -3,6 +3,8 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+import webbrowser
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -11,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import db
 from core import app_paths, importer, updater
+from core.inventory_sync import InventoryStatus, InventorySyncManager
 from core.logging_config import get_log_path
 from core.version import __version__
 from ui_item_card import ItemCardWindow
@@ -19,6 +22,7 @@ from core.excel import Workbook
 from consignment_ui import ConsignmentListWindow, ConsignmentModal, ReturnModal
 from ui.sync_panel import SyncPanel
 from ttkbootstrap import Style
+from settings import load_google_sync_settings
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +84,12 @@ class MainWindow:
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", self._on_search_change)
         self.show_sold_var = tk.BooleanVar(value=False)
-        self.sync_state_var = tk.StringVar(value="Synced ✅")
+        self.sync_state_var = tk.StringVar(value="Bağlantı kontrol ediliyor…")
         self.user_status_var = tk.StringVar()
         self.last_sync_var = tk.StringVar(value="—")
+        self.sync_status_badge_var = tk.StringVar(value="Bağlantı kontrol ediliyor…")
+        self.sync_detail_var = tk.StringVar(value="Google Sheets bağlantısı doğrulanıyor…")
+        self.sync_pending_var = tk.StringVar(value="Bekleyen değişiklik: 0")
         self.summary_var = tk.StringVar(
             value="Total Items: 0 | Total Area: 0.00 sq ft | Last Sync: —"
         )
@@ -111,8 +118,14 @@ class MainWindow:
         self.column_status_var = tk.StringVar(value="")
         self._startup_column_changes = list(column_changes or [])
         self._auto_save_job: Optional[str] = None
+        self._offline_controls: List[tk.Widget] = []
+        self._offline = True
+        self._sync_detail_default = self.sync_detail_var.get()
+        self._conflict_toast_job: Optional[str] = None
+        self.sync_manager = InventorySyncManager(status_callback=self._handle_sync_status)
         self._configure_style()
         self._create_widgets()
+        self._apply_offline_state(True)
         self.load_items()
         self.load_customers()
         self.root.bind("<Control-l>", self.on_open_label_generator)
@@ -121,6 +134,104 @@ class MainWindow:
         self._apply_theme()
         self._maybe_show_startup_column_changes()
         self._update_user_status()
+        self._start_sync_workers()
+
+    def _start_sync_workers(self) -> None:
+        def _bootstrap() -> None:
+            online = self.sync_manager.load_initial_snapshot()
+            self.root.after(0, lambda: self._after_initial_sync(online))
+
+        threading.Thread(target=_bootstrap, daemon=True).start()
+        self.sync_manager.start()
+
+    def _after_initial_sync(self, online: bool) -> None:
+        self._apply_offline_state(not online)
+        self.load_items()
+
+    def _apply_offline_state(self, offline: bool) -> None:
+        self._offline = offline
+        state = tk.DISABLED if offline else tk.NORMAL
+        for widget in self._offline_controls:
+            try:
+                widget.configure(state=state)
+            except tk.TclError:
+                continue
+        self._update_sync_badge(not offline)
+
+    def _update_sync_badge(self, online: bool) -> None:
+        if not hasattr(self, "sync_badge"):
+            return
+        background = "#0f5132" if online else "#b91c1c"
+        self.sync_badge.configure(background=background, foreground="#ffffff")
+
+    def _handle_sync_status(self, status: InventoryStatus) -> None:
+        self.root.after(0, lambda: self._apply_sync_status(status))
+
+    def _apply_sync_status(self, status: InventoryStatus) -> None:
+        online = status.online
+        if online:
+            badge_text = "ONLINE – senkronize ediliyor" if status.pending else "ONLINE – synced"
+            detail = (
+                f"Son senkron: {status.last_sync}" if status.last_sync else "Son senkron: —"
+            )
+        else:
+            badge_text = "OFFLINE – read-only"
+            detail = status.error or "Bağlantı bulunamadı. Değişiklikler kuyruğa alınacak."
+
+        if status.message:
+            detail = status.message
+
+        self.sync_status_badge_var.set(badge_text)
+        self.sync_state_var.set(badge_text)
+        self._sync_detail_default = detail
+        if status.error and not online:
+            self.sync_detail_var.set(status.error)
+        else:
+            self.sync_detail_var.set(detail)
+        pending_text = (
+            f"Bekleyen değişiklik: {status.pending}"
+            if status.pending
+            else "Bekleyen değişiklik: 0"
+        )
+        self.sync_pending_var.set(pending_text)
+        self.last_sync_var.set(status.last_sync or "—")
+        self._apply_offline_state(not online)
+        self._update_user_status()
+        if status.conflicts:
+            for rug_no in status.conflicts:
+                self._show_conflict_message(rug_no)
+
+    def _show_conflict_message(self, rug_no: str) -> None:
+        message = f"{rug_no} satırı uzaktan güncellendi"
+        self.sync_detail_var.set(message)
+        if self._conflict_toast_job:
+            self.root.after_cancel(self._conflict_toast_job)
+        self._conflict_toast_job = self.root.after(6000, self._restore_sync_detail)
+
+    def _restore_sync_detail(self) -> None:
+        self.sync_detail_var.set(self._sync_detail_default)
+        self._conflict_toast_job = None
+
+    def on_sync_now(self) -> None:
+        self.sync_manager.sync_now()
+        self._sync_detail_default = "Senkronizasyon başlatıldı…"
+        self.sync_detail_var.set(self._sync_detail_default)
+
+    def on_open_sheet(self) -> None:
+        settings = load_google_sync_settings()
+        sheet_id = settings.spreadsheet_id
+        if not sheet_id:
+            messagebox.showinfo(
+                "Google Sheets",
+                "Sheet ID ayarlardan girilmemiş.",
+                parent=self.root,
+            )
+            return
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+        try:
+            webbrowser.open(url)
+        except Exception as exc:
+            messagebox.showerror("Google Sheets", f"Sayfa açılamadı: {exc}", parent=self.root)
 
     def _configure_style(self) -> None:
         default_font = tkfont.nametofont("TkDefaultFont")
@@ -633,9 +744,9 @@ class MainWindow:
 
     def _update_user_status(self) -> None:
         self.user_status_var.set(
-            f"Signed in as {self.current_user} | {self.sync_state_var.get()}"
+            f"Signed in as {self.current_user} | {self.sync_status_badge_var.get()}"
         )
-        self.last_sync_var.set(self.sync_state_var.get())
+        self.last_sync_var.set(self._sync_detail_default)
         if self._last_loaded_items:
             self.update_totals(list(self._last_loaded_items))
 
@@ -644,8 +755,30 @@ class MainWindow:
 
         header = ttk.Frame(container)
         header.pack(fill=tk.X, pady=(0, 12))
+        status_panel = ttk.Frame(header)
+        status_panel.pack(side=tk.RIGHT, anchor=tk.E)
+        status_panel.columnconfigure(0, weight=1)
+        self.sync_badge = tk.Label(
+            status_panel,
+            textvariable=self.sync_status_badge_var,
+            font=("Segoe UI", 10, "bold"),
+            padx=10,
+            pady=4,
+        )
+        self.sync_badge.grid(row=0, column=0, sticky="e", pady=(0, 4))
+        self.sync_detail_label = ttk.Label(status_panel, textvariable=self.sync_detail_var, style="Hint.TLabel")
+        self.sync_detail_label.grid(row=1, column=0, sticky="e")
+        self.sync_pending_label = ttk.Label(status_panel, textvariable=self.sync_pending_var, style="Hint.TLabel")
+        self.sync_pending_label.grid(row=2, column=0, sticky="e", pady=(2, 0))
+        button_panel = ttk.Frame(status_panel)
+        button_panel.grid(row=0, column=1, rowspan=3, padx=(12, 0), sticky="ns")
+        self.sync_now_button = ttk.Button(button_panel, text="Sync Now", command=self.on_sync_now)
+        self.sync_now_button.pack(side=tk.TOP, fill=tk.X)
+        self.open_sheet_button = ttk.Button(button_panel, text="Open Sheet", command=self.on_open_sheet)
+        self.open_sheet_button.pack(side=tk.TOP, fill=tk.X, pady=(6, 0))
+        self._update_sync_badge(not self._offline)
         self.user_label = ttk.Label(header, textvariable=self.user_status_var, style="SubHeader.TLabel")
-        self.user_label.pack(side=tk.RIGHT)
+        self.user_label.pack(side=tk.LEFT)
 
         title = ttk.Label(container, text="RugBase Inventory System", style="Hero.TLabel")
         title.pack(anchor="center", pady=(0, 12))
@@ -787,26 +920,31 @@ class MainWindow:
             actions_frame, text="Add Item", style="Accent.TButton", command=self.on_add_item
         )
         self.add_button.pack(side=tk.LEFT)
+        self._offline_controls.append(self.add_button)
 
         self.open_button = ttk.Button(
             actions_frame, text="Open Selected", command=self.on_open_item
         )
         self.open_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._offline_controls.append(self.open_button)
 
         self.label_button = ttk.Button(
             actions_frame, text="Generate Label (DYMO)", command=self.open_label_generator
         )
         self.label_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._offline_controls.append(self.label_button)
 
         self.consignment_button = ttk.Button(
             actions_frame, text="Consignment Out", command=self.open_consignment_modal
         )
         self.consignment_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._offline_controls.append(self.consignment_button)
 
         self.return_button = ttk.Button(
             actions_frame, text="Consignment Returns", command=self.open_return_modal
         )
         self.return_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._offline_controls.append(self.return_button)
 
         self.consignment_list_button = ttk.Button(
             actions_frame, text="View Consignments", command=self.open_consignment_list
@@ -817,16 +955,19 @@ class MainWindow:
             actions_frame, text="Delete Item", command=self.on_delete_item
         )
         self.delete_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._offline_controls.append(self.delete_button)
 
         export_frame = ttk.Frame(main_card)
         export_frame.pack(fill=tk.X, pady=(12, 0))
-        ttk.Button(export_frame, text="Import CSV", command=self.on_import_csv).pack(side=tk.LEFT)
-        ttk.Button(export_frame, text="Import XML", command=self.on_import_xml).pack(
-            side=tk.LEFT, padx=(8, 0)
-        )
-        ttk.Button(export_frame, text="Export CSV", command=self.on_export_csv).pack(
-            side=tk.LEFT, padx=(8, 0)
-        )
+        self.import_csv_button = ttk.Button(export_frame, text="Import CSV", command=self.on_import_csv)
+        self.import_csv_button.pack(side=tk.LEFT)
+        self._offline_controls.append(self.import_csv_button)
+        self.import_xml_button = ttk.Button(export_frame, text="Import XML", command=self.on_import_xml)
+        self.import_xml_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._offline_controls.append(self.import_xml_button)
+        self.export_csv_button = ttk.Button(export_frame, text="Export CSV", command=self.on_export_csv)
+        self.export_csv_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._offline_controls.append(self.export_csv_button)
         ttk.Button(export_frame, text="Export XLSX", command=self.on_export_xlsx).pack(
             side=tk.LEFT, padx=(8, 0)
         )
@@ -1581,6 +1722,11 @@ class MainWindow:
         if hasattr(self, "sync_panel"):
             try:
                 self.sync_panel.shutdown()
+            except Exception:  # pragma: no cover - defensive cleanup
+                pass
+        if hasattr(self, "sync_manager"):
+            try:
+                self.sync_manager.shutdown()
             except Exception:  # pragma: no cover - defensive cleanup
                 pass
         self.root.destroy()
