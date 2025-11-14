@@ -1757,6 +1757,13 @@ def open_logs() -> str:
     return str(log_path)
 
 
+def ensure_sheet(service, spreadsheet_id: str, worksheet_title: str) -> int:
+    """Ensure the spreadsheet contains the expected worksheet structure."""
+
+    resolved_title = require_worksheet_title(worksheet_title)
+    return _ensure_sheet_structure(service, spreadsheet_id, resolved_title)
+
+
 __all__ = [
     "HEADERS",
     "SheetRow",

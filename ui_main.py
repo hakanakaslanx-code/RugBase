@@ -1739,7 +1739,11 @@ class MainWindow:
     def on_check_for_updates(self) -> None:
         """Prompt the user to download the latest RugBase release."""
 
-        updater.check_for_updates(self.root)
+        threading.Thread(
+            target=lambda: updater.check_for_updates(self.root),
+            name="UpdateCheckWorker",
+            daemon=True,
+        ).start()
 
     def _handle_import_result(self, result: importer.ImportResult, title: str) -> None:
         self.load_items()

@@ -158,19 +158,18 @@ def _load_drive_config() -> Dict[str, str]:
     return config
 
 
-def _drive_setting(key: str, env_var: str, default: str = "") -> str:
-    value = os.getenv(env_var)
-    if value:
-        return value
-    return _DRIVE_CONFIG.get(key, default)
-
-
 _DRIVE_CONFIG: Dict[str, str] = _load_drive_config()
 
-ROOT_FOLDER_ID = _drive_setting("root_folder_id", "RUGBASE_ROOT_FOLDER_ID")
-DEFAULT_SERVICE_ACCOUNT_EMAIL = _drive_setting("service_account_email", "RUGBASE_SERVICE_ACCOUNT_EMAIL")
-DEFAULT_SPREADSHEET_URL = _drive_setting("spreadsheet_url", "RUGBASE_SPREADSHEET_URL")
-DEFAULT_PRIVATE_KEY_ID = _drive_setting("private_key_id", "RUGBASE_PRIVATE_KEY_ID")
+ROOT_FOLDER_ID = os.getenv("RUGBASE_ROOT_FOLDER_ID") or _DRIVE_CONFIG.get("root_folder_id", "")
+DEFAULT_SERVICE_ACCOUNT_EMAIL = os.getenv("RUGBASE_SERVICE_ACCOUNT_EMAIL") or _DRIVE_CONFIG.get(
+    "service_account_email", ""
+)
+DEFAULT_SPREADSHEET_URL = os.getenv("RUGBASE_SPREADSHEET_URL") or _DRIVE_CONFIG.get(
+    "spreadsheet_url", ""
+)
+DEFAULT_PRIVATE_KEY_ID = os.getenv("RUGBASE_PRIVATE_KEY_ID") or _DRIVE_CONFIG.get(
+    "private_key_id", ""
+)
 STATUS_CONNECTED = "connected"
 STATUS_OFFLINE = "offline"
 STATUS_REAUTHORISE = "reauthorize"
