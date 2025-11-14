@@ -42,26 +42,26 @@ def test_a1_range_uses_single_quoted_titles():
 
 
 def test_full_column_range_and_sheet_range_format():
-    assert sheets_sync.FULL_COLUMN_RANGE.startswith("A1:")
+    assert sheets_sync.FULL_COLUMN_RANGE.startswith("A:")
     assert sheets_sync._sheet_range(2) == "A2:AG2"
     with pytest.raises(sheets_sync.SheetsSyncError):
         sheets_sync._sheet_range(0)
 
 
 def test_inventory_range_helpers_respect_title_and_columns():
-    assert sheets_sync.inventory_full_range("items") == "'items'!A1:AG"
+    assert sheets_sync.inventory_full_range("items") == "'items'!A:AG"
     assert sheets_sync.inventory_row_range("items", 5) == "'items'!A5:AG5"
     assert sheets_sync.inventory_column_range("items") == "'items'!A:AG"
 
 
 def test_inventory_range_helpers_normalise_wrapped_quotes():
-    assert sheets_sync.inventory_full_range("'Legacy'") == "'Legacy'!A1:AG"
+    assert sheets_sync.inventory_full_range("'Legacy'") == "'Legacy'!A:AG"
     assert sheets_sync.inventory_row_range('"Legacy"', 3) == "'Legacy'!A3:AG3"
 
 
 def test_sheets_client_range_uses_dynamic_last_column():
     columns = len(sheets_sync.HEADERS)
-    assert sheets_client.a1_full_column_range("items", columns=columns) == "'items'!A1:AG"
+    assert sheets_client.a1_full_column_range("items", columns=columns) == "'items'!A:AG"
     assert sheets_client.a1_headers_range("items", columns=columns) == "'items'!A1:AG1"
     assert sheets_client.a1_row_range("items", 5, columns=columns) == "'items'!A5:AG5"
-    assert sheets_client.a1_full_column_range("items", columns=80) == "'items'!A1:CB"
+    assert sheets_client.a1_full_column_range("items", columns=80) == "'items'!A:CB"
