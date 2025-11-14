@@ -43,7 +43,11 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optio
 
 import db
 from core import app_paths
-from core.google_credentials import CredentialsFileInvalidError, ensure_service_account_file
+from core.google_credentials import (
+    CredentialsFileInvalidError,
+    REQUIRED_FIELDS,
+    ensure_service_account_file,
+)
 from core.version import __version__ as APP_VERSION
 from core.conflicts import record as record_conflict
 from core.offline_queue import OutboxQueue
@@ -54,9 +58,11 @@ try:  # pragma: no cover - optional dependency
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
+    from google.auth import exceptions as google_auth_exceptions
 except ImportError:  # pragma: no cover - runtime guard
     service_account = None  # type: ignore[assignment]
     build = None  # type: ignore[assignment]
+    google_auth_exceptions = None  # type: ignore[assignment]
 
     class HttpError(Exception):
         """Fallback error type when googleapiclient is unavailable."""
@@ -120,6 +126,8 @@ DEFAULT_WORKSHEET_TITLE = "items"
 META_SHEET_TITLE = "meta"
 LOG_SHEET_TITLE = "sync_logs"
 SCOPES: Iterable[str] = ("https://www.googleapis.com/auth/spreadsheets",)
+FULL_COLUMN_RANGE = "A:ZZ"
+OFFLINE_QUEUE_MESSAGE = "Offline, değişiklik saklandı → çevrim içi olunca gönderilecek"
 
 STATUS_ALLOWED_VALUES: Tuple[str, ...] = ("active", "archived", "sold", "reserved")
 MAX_BATCH_ROWS = 500
@@ -302,6 +310,50 @@ def _require_api() -> None:
         )
 
 
+def _format_credentials_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    lower = message.lower()
+
+    if google_auth_exceptions is not None:
+        malformed = getattr(google_auth_exceptions, "MalformedError", tuple())
+        default_error = getattr(google_auth_exceptions, "DefaultCredentialsError", tuple())
+        if isinstance(exc, malformed):
+            return message or "Service account JSON bozuk."
+        if isinstance(exc, default_error):
+            return message or "Service account JSON doğrulanamadı."
+
+    if "invalid jwt signature" in lower:
+        return "Private key imzası doğrulanamadı. Lütfen credentials.json dosyasını tekrar indirin."
+    if "missing" in lower and "field" in lower:
+        fields = ", ".join(REQUIRED_FIELDS)
+        return f"JSON eksik alanlar: {fields}"
+    if "expected format" in lower:
+        fields = ", ".join(REQUIRED_FIELDS)
+        return f"JSON eksik alanlar: {fields}"
+    if "could not deserialize key data" in lower or "private key" in lower:
+        return "Private key değeri çözümlenemedi. JSON içindeki 'private_key' alanını kontrol edin."
+
+    return message or "Geçersiz service account JSON dosyası."
+
+
+def _utcnow_iso() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def require_worksheet_title(title: Optional[str]) -> str:
+    normalised = (title or "").strip()
+    if not normalised:
+        raise SpreadsheetAccessError(
+            "Worksheet adı Sync Settings'de belirtilmeli."
+        )
+    return normalised
+
+
 def get_client(credentials_path: str, payload: Optional[Mapping[str, object]] = None):
     """Return an authenticated Sheets API client using the service account."""
 
@@ -312,12 +364,27 @@ def get_client(credentials_path: str, payload: Optional[Mapping[str, object]] = 
 
     try:
         data = payload or ensure_service_account_file(path)
-        credentials = service_account.Credentials.from_service_account_info(  # type: ignore[union-attr]
-            data, scopes=SCOPES
-        )
-    except ValueError as exc:  # pragma: no cover - invalid key file
-        raise CredentialsFileInvalidError(str(exc) or "JSON eksik alanlar: private_key") from exc
-    return build("sheets", "v4", credentials=credentials, cache_discovery=False)  # type: ignore[call-arg]
+    except CredentialsFileInvalidError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive guard
+        raise CredentialsFileInvalidError(str(exc)) from exc
+
+    try:
+        if payload is None:
+            credentials = service_account.Credentials.from_service_account_file(  # type: ignore[union-attr]
+                str(path), scopes=SCOPES
+            )
+        else:
+            credentials = service_account.Credentials.from_service_account_info(  # type: ignore[union-attr]
+                data, scopes=SCOPES
+            )
+    except Exception as exc:  # pragma: no cover - invalid key file
+        raise CredentialsFileInvalidError(_format_credentials_error(exc)) from exc
+
+    try:
+        return build("sheets", "v4", credentials=credentials, cache_discovery=False)  # type: ignore[call-arg]
+    except Exception as exc:  # pragma: no cover - HTTP / auth error guard
+        raise SpreadsheetAccessError(str(exc)) from exc
 
 
 _SIMPLE_TITLE_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -326,9 +393,7 @@ _SIMPLE_TITLE_RE = re.compile(r"^[A-Za-z0-9_]+$")
 def _quote_title(title: str) -> str:
     """Return a worksheet title safely formatted for A1 notation."""
 
-    normalised = (title or "").strip()
-    if not normalised:
-        return "''"
+    normalised = require_worksheet_title(title)
 
     if _SIMPLE_TITLE_RE.fullmatch(normalised):
         return normalised
@@ -525,7 +590,7 @@ def _read_local_meta(conn: sqlite3.Connection) -> Dict[str, str]:
 
 
 def _write_local_meta(conn: sqlite3.Connection, updates: Mapping[str, str]) -> None:
-    timestamp = datetime.utcnow().replace(microsecond=0).isoformat()
+    timestamp = _utcnow_iso()
     with conn:
         conn.executemany(
             "INSERT INTO sheet_sync_meta(key, value) VALUES(?, ?) "
@@ -545,7 +610,7 @@ def _load_previous_hashes(conn: sqlite3.Connection) -> Dict[str, str]:
 
 
 def _update_local_hash_state(conn: sqlite3.Connection, rows: Sequence[SheetRow]) -> None:
-    timestamp = datetime.utcnow().replace(microsecond=0).isoformat()
+    timestamp = _utcnow_iso()
     payload = [
         (row.row_id, row.hash, timestamp)
         for row in rows
@@ -572,7 +637,7 @@ def _sqlite_row_to_sheet(row: sqlite3.Row) -> SheetRow:
     values["Currency"] = values.get("Currency") or "USD"
     values["UpdatedAt"] = values.get("UpdatedAt") or record.get("updated_at") or ""
     if not values["UpdatedAt"]:
-        values["UpdatedAt"] = datetime.utcnow().replace(microsecond=0).isoformat()
+        values["UpdatedAt"] = _utcnow_iso()
     qty_value = record.get("qty")
     values["Qty"] = str(qty_value if qty_value is not None else 0)
     consignment = record.get("consignment_id")
@@ -982,7 +1047,7 @@ def _append_sync_log(
     duration: float,
     retries: int,
 ) -> None:
-    timestamp = datetime.utcnow().replace(microsecond=0).isoformat()
+    timestamp = _utcnow_iso()
     log_sheet_range = _a1_range(LOG_SHEET_TITLE, "A:A")
     existing = _values_batch_get(service, spreadsheet_id, [log_sheet_range])
     entries = existing.get("valueRanges", [{}])[0].get("values", [])
@@ -1001,7 +1066,7 @@ def _read_remote_rows(
     spreadsheet_id: str,
     worksheet_title: str,
 ) -> List[SheetRow]:
-    range_a1 = _a1_range(worksheet_title, f"A:{_column_a1(len(HEADERS) - 1)}")
+    range_a1 = _a1_range(worksheet_title, FULL_COLUMN_RANGE)
     payload = _values_batch_get(service, spreadsheet_id, [range_a1])
     value_ranges = payload.get("valueRanges", [])
     rows: List[SheetRow] = []
@@ -1058,15 +1123,18 @@ def _write_remote_meta(
 def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+    candidate = value
+    if value.endswith("Z"):
+        candidate = value[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(candidate)
     except ValueError:
-        if value.endswith("Z"):
-            try:
-                return datetime.fromisoformat(value[:-1] + "+00:00")
-            except ValueError:
-                return None
-    return None
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
 
 
 def _to_int(value: Any, default: int = 0) -> int:
@@ -1087,7 +1155,7 @@ def resolve_conflict(
     """Merge conflicting rows field-by-field using UpdatedAt timestamps."""
 
     backup_dir = app_paths.ensure_directory(app_paths.BACKUP_DIR)
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     row_id = remote_row.get("RowID") or local_row.get("RowID") or "unknown"
     local_ts = _parse_timestamp(local_row.get("UpdatedAt"))
     remote_ts = _parse_timestamp(remote_row.get("UpdatedAt"))
@@ -1127,7 +1195,7 @@ def resolve_conflict(
     else:
         chosen_ts = local_ts or remote_ts
     if field_diffs:
-        chosen_ts = datetime.utcnow().replace(microsecond=0, tzinfo=timezone.utc)
+        chosen_ts = datetime.now(timezone.utc).replace(microsecond=0)
 
     if chosen_ts:
         merged["UpdatedAt"] = chosen_ts.isoformat().replace("+00:00", "Z")
@@ -1250,8 +1318,10 @@ def push(
     if not parsed_id:
         raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
+    resolved_title = require_worksheet_title(worksheet_title)
+
     service = get_client(credential_path)
-    worksheet_id = _ensure_sheet_structure(service, parsed_id, worksheet_title)
+    worksheet_id = _ensure_sheet_structure(service, parsed_id, resolved_title)
 
     try:
         customer_rows = db.fetch_customers_for_sheet()
@@ -1273,12 +1343,12 @@ def push(
         processed_outbox = _flush_outbox(
             service,
             parsed_id,
-            worksheet_title,
+            resolved_title,
             db_path=db_path,
             log_callback=log_callback,
         )
     except Exception as exc:  # pragma: no cover - network/IO guard
-        raise SpreadsheetAccessError(f"Outbox queue could not be sent: {exc}") from exc
+        raise SpreadsheetAccessError(OFFLINE_QUEUE_MESSAGE) from exc
     if processed_outbox and log_callback:
         log_callback(f"Queued {processed_outbox} rows uploaded.")
 
@@ -1289,7 +1359,7 @@ def push(
 
     detected_new_rows, changed_rows = detect_local_deltas(local_rows, previous_hashes)
 
-    remote_rows = _read_remote_rows(service, parsed_id, worksheet_title)
+    remote_rows = _read_remote_rows(service, parsed_id, resolved_title)
     remote_index: Dict[str, SheetRow] = {row.row_id: row for row in remote_rows}
 
     new_rows: List[SheetRow] = []
@@ -1327,15 +1397,13 @@ def push(
         for batch in batches:
             data = []
             for row_index, row in batch:
-                a1_range = _a1_range(worksheet_title, _sheet_range(row_index))
+                a1_range = _a1_range(resolved_title, _sheet_range(row_index))
                 data.append({"range": a1_range, "values": [row.as_list()]})
             try:
                 _, retries = _values_batch_update(service, parsed_id, data)
             except Exception as exc:  # pragma: no cover - network/IO guard
                 _queue_failed_rows(row for _, row in batch)
-                raise SpreadsheetAccessError(
-                    f"Sheets update failed: {exc}"
-                ) from exc
+                raise SpreadsheetAccessError(OFFLINE_QUEUE_MESSAGE) from exc
             total_written += len(batch)
             total_retries += retries
             if log_callback:
@@ -1351,7 +1419,7 @@ def push(
                 row.row_index = next_row_index
                 data.append(
                     {
-                        "range": _a1_range(worksheet_title, _sheet_range(next_row_index)),
+                        "range": _a1_range(resolved_title, _sheet_range(next_row_index)),
                         "values": [row.as_list()],
                     }
                 )
@@ -1360,9 +1428,7 @@ def push(
                 _, retries = _values_batch_update(service, parsed_id, data)
             except Exception as exc:  # pragma: no cover - network/IO guard
                 _queue_failed_rows(batch)
-                raise SpreadsheetAccessError(
-                    f"Sheets insert failed: {exc}"
-                ) from exc
+                raise SpreadsheetAccessError(OFFLINE_QUEUE_MESSAGE) from exc
             total_written += len(batch)
             total_retries += retries
             if log_callback:
@@ -1371,7 +1437,7 @@ def push(
                 )
 
     if total_written:
-        now_iso = datetime.utcnow().replace(microsecond=0).isoformat()
+        now_iso = _utcnow_iso()
         with _connect(db_path) as conn:
             _update_local_hash_state(conn, local_rows)
             _write_local_meta(conn, {"last_sync_utc": now_iso, "db_version": APP_VERSION})
@@ -1417,15 +1483,17 @@ def pull(
     if not parsed_id:
         raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
+    resolved_title = require_worksheet_title(worksheet_title)
+
     service = get_client(credential_path)
-    _ensure_sheet_structure(service, parsed_id, worksheet_title)
+    _ensure_sheet_structure(service, parsed_id, resolved_title)
 
     start = time.monotonic()
     with _connect(db_path) as conn:
         meta = _read_local_meta(conn)
     last_pull = _parse_timestamp(meta.get("last_pull_utc")) if meta else None
 
-    remote_rows = _read_remote_rows(service, parsed_id, worksheet_title)
+    remote_rows = _read_remote_rows(service, parsed_id, resolved_title)
     changed: List[SheetRow] = []
     for row in remote_rows:
         updated_at = _parse_timestamp(row.values.get("UpdatedAt"))
@@ -1457,11 +1525,11 @@ def pull(
             db.upsert_item(payload)
             applied += 1
         _update_local_hash_state(conn, remote_rows)
-        now_iso = datetime.utcnow().replace(microsecond=0).isoformat()
+        now_iso = _utcnow_iso()
         _write_local_meta(conn, {"last_pull_utc": now_iso, "db_version": APP_VERSION})
 
     duration = time.monotonic() - start
-    now_remote = datetime.utcnow().replace(microsecond=0).isoformat()
+    now_remote = _utcnow_iso()
     _write_remote_meta(
         service,
         parsed_id,
@@ -1492,12 +1560,14 @@ def latest_remote_updated_at(
     if not parsed_id:
         raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
+    resolved_title = require_worksheet_title(worksheet_title)
+
     try:
         updated_index = HEADERS.index("UpdatedAt") + 1
     except ValueError:
         return None
     column = _column_a1(updated_index)
-    range_spec = _a1_range(worksheet_title, f"{column}2:{column}")
+    range_spec = _a1_range(resolved_title, f"{column}2:{column}")
 
     response = (
         service.spreadsheets()
@@ -1546,6 +1616,8 @@ def health_check(
     else:
         account_email = ""
 
+    resolved_title = require_worksheet_title(worksheet_title)
+
     service = get_client(credential_path, payload)
 
     try:
@@ -1558,7 +1630,7 @@ def health_check(
             ) from exc
         raise SpreadsheetAccessError(f"Sheets read failed: {exc}") from exc
 
-    resolved_title, resolved_id = _resolve_worksheet(metadata, worksheet_title, sheet_gid)
+    resolved_title, resolved_id = _resolve_worksheet(metadata, resolved_title, sheet_gid)
     worksheet_id = _ensure_sheet_structure(service, parsed_id, resolved_title)
     if worksheet_id is None and resolved_id is not None:
         worksheet_id = resolved_id
@@ -1610,6 +1682,7 @@ __all__ = [
     "detect_local_deltas",
     "get_client",
     "is_api_available",
+    "require_worksheet_title",
     "push",
     "pull",
     "health_check",

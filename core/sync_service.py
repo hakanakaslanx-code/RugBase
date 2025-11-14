@@ -27,15 +27,18 @@ class SyncServiceError(Exception):
 def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+    candidate = value
+    if value.endswith("Z"):
+        candidate = value[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(candidate)
     except ValueError:
-        if value.endswith("Z"):
-            try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError:
-                return None
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
 
 
 def _normalise_remote_row(row: Dict[str, str]) -> Dict[str, Any]:
@@ -154,16 +157,18 @@ class SyncService:
         report["imports"] = "Google API libraries loaded successfully."
 
         client = sheets_sync.get_client(settings.credential_path)
-        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        worksheet_title = sheets_sync.require_worksheet_title(settings.worksheet_title)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, worksheet_title)
 
-        sheet_title = settings.worksheet_title or sheets_sync.DEFAULT_WORKSHEET_TITLE
+        escaped_title = worksheet_title.replace("'", "''")
+        range_spec = f"'{escaped_title}'!{sheets_sync.FULL_COLUMN_RANGE}"
         try:
             result = (
                 client.spreadsheets()
                 .values()
                 .get(
                     spreadsheetId=sheets_sync.parse_spreadsheet_id(settings.spreadsheet_id),
-                    range=f"{sheet_title}!A1",
+                    range=range_spec,
                 )
                 .execute()
             )
@@ -176,7 +181,7 @@ class SyncService:
         first_value = values[0][0] if values and values[0] else ""
         report["values_get"] = f"Cell A1 read: '{first_value}'."
 
-        sheets_sync.verify_roundtrip(client, settings.spreadsheet_id, settings.worksheet_title)
+        sheets_sync.verify_roundtrip(client, settings.spreadsheet_id, worksheet_title)
         report["roundtrip"] = "Sheets write/read verification completed."
 
         return report
@@ -190,16 +195,18 @@ class SyncService:
         """Fetch the metadata stored alongside the spreadsheet."""
 
         client = sheets_sync.get_client(settings.credential_path)
-        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        worksheet_title = sheets_sync.require_worksheet_title(settings.worksheet_title)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, worksheet_title)
         return sheets_sync.read_database_metadata(client, settings.spreadsheet_id)
 
     def pull(self, settings: GoogleSyncSettings) -> Dict[str, int]:
         """Synchronise data from Google Sheets into SQLite."""
 
         client = sheets_sync.get_client(settings.credential_path)
-        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        worksheet_title = sheets_sync.require_worksheet_title(settings.worksheet_title)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, worksheet_title)
         remote_rows = sheets_sync.read_rows(
-            client, settings.spreadsheet_id, settings.worksheet_title
+            client, settings.spreadsheet_id, worksheet_title
         )
 
         stats = {"inserted": 0, "updated": 0, "skipped": 0, "conflicts": 0}
@@ -267,9 +274,10 @@ class SyncService:
         """Synchronise data from SQLite to Google Sheets."""
 
         client = sheets_sync.get_client(settings.credential_path)
-        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, settings.worksheet_title)
+        worksheet_title = sheets_sync.require_worksheet_title(settings.worksheet_title)
+        sheets_sync.ensure_sheet(client, settings.spreadsheet_id, worksheet_title)
         remote_rows = sheets_sync.read_rows(
-            client, settings.spreadsheet_id, settings.worksheet_title
+            client, settings.spreadsheet_id, worksheet_title
         )
         remote_index = {
             row.get("id"): _normalise_remote_row(row) for row in remote_rows if row.get("id")
@@ -335,7 +343,7 @@ class SyncService:
                 client,
                 settings.spreadsheet_id,
                 pending_updates,
-                settings.worksheet_title,
+                worksheet_title,
             )
         self._persist_metadata(client, settings)
 
