@@ -116,30 +116,36 @@ def _row(**overrides: Any) -> Dict[str, Any]:
 
 def test_get_rows_converts_numeric_and_blank_cells() -> None:
     header = list(sheets_gateway.REQUIRED_HEADERS)
-    data = [
-        [
-            "R1",
-            "Modern Collection",
-            "Heritage",
-            "Red",
-            "Cream",
-            "8x10",
-            "96x120",
-            "120.5",
-            "Handmade",
-            "Rectangle",
-            "Classic",
-            "rug.jpg",
-            "Turkey",
-            "1999.5",
-            "1899.5",
-            "2499.5",
-            "900",
-            "Wool",
-            "2024-01-02T11:00:00Z",
-            "TRUE",
-        ]
-    ]
+    row_source = {
+        "RugNo": "R1",
+        "UPC": "UPC-1",
+        "Collection": "Modern Collection",
+        "Design": "Heritage",
+        "Brand": "Acme Rugs",
+        "Ground": "Red",
+        "Border": "Cream",
+        "ASize": "8x10",
+        "SSize": "96x120",
+        "Area": "120.5",
+        "Type": "Handmade",
+        "Rate": "5.5",
+        "Amount": "750.25",
+        "Shape": "Rectangle",
+        "Style": "Classic",
+        "ImageFileName": "rug.jpg",
+        "Origin": "Turkey",
+        "Retail": "1999.5",
+        "SP": "1899.5",
+        "MSRP": "2499.5",
+        "Cost": "900",
+        "Status": "active",
+        "Qty": "3",
+        "Notes": "Tagged",
+        "UpdatedAt": "2024-01-02T11:00:00Z",
+        "RowID": "1",
+        "Deleted": "TRUE",
+    }
+    data = [[row_source.get(column, "") for column in header]]
     service = _FakeService([header] + data)
 
     rows = sheets_gateway.get_rows(service=service)
@@ -147,14 +153,22 @@ def test_get_rows_converts_numeric_and_blank_cells() -> None:
     assert rows == [
         {
             "RugNo": "R1",
+            "UPC": "UPC-1",
+            "RollNo": None,
+            "VtgNo": None,
+            "VCollection": None,
             "Collection": "Modern Collection",
+            "VDesign": None,
             "Design": "Heritage",
+            "Brand": "Acme Rugs",
             "Ground": "Red",
             "Border": "Cream",
             "ASize": "8x10",
             "SSize": "96x120",
             "Area": 120.5,
             "Type": "Handmade",
+            "Rate": 5.5,
+            "Amount": 750.25,
             "Shape": "Rectangle",
             "Style": "Classic",
             "ImageFileName": "rug.jpg",
@@ -163,8 +177,13 @@ def test_get_rows_converts_numeric_and_blank_cells() -> None:
             "SP": 1899.5,
             "MSRP": 2499.5,
             "Cost": 900.0,
-            "Content": "Wool",
-            "LastUpdated": "2024-01-02T11:00:00Z",
+            "Status": "active",
+            "Qty": 3,
+            "Consignment": None,
+            "Notes": "Tagged",
+            "UpdatedAt": "2024-01-02T11:00:00Z",
+            "RowID": "1",
+            "Hash": None,
             "Deleted": True,
         }
     ]
@@ -173,7 +192,7 @@ def test_get_rows_converts_numeric_and_blank_cells() -> None:
 def test_upsert_rows_writes_headers_and_chunks_batches() -> None:
     service = _FakeService()
     rows = [
-        _row(RugNo=f"R{index}", LastUpdated="2024-01-01T00:00:00Z", Deleted=False)
+        _row(RugNo=f"R{index}", UpdatedAt="2024-01-01T00:00:00Z", Deleted=False)
         for index in range(1205)
     ]
 
@@ -197,6 +216,8 @@ def test_upsert_rows_prefers_rugno_for_matching() -> None:
         SSize="96x120",
         Area="120",
         Type="Handmade",
+        Rate="4.2",
+        Amount="504",
         Shape="Rectangle",
         Style="Classic",
         ImageFileName="old.jpg",
@@ -205,8 +226,10 @@ def test_upsert_rows_prefers_rugno_for_matching() -> None:
         SP="1899",
         MSRP="2499",
         Cost="900",
-        Content="Wool",
-        LastUpdated="2024-01-01T00:00:00Z",
+        Status="active",
+        Qty="2",
+        Notes="Great condition",
+        UpdatedAt="2024-01-01T00:00:00Z",
         Deleted=False,
     )
     existing = [header, [base_row.get(column) for column in header]]
@@ -217,22 +240,22 @@ def test_upsert_rows_prefers_rugno_for_matching() -> None:
             {
                 "RugNo": "R-1",
                 "Design": "Updated",
-                "LastUpdated": "2024-02-01T12:00:00Z",
+                "UpdatedAt": "2024-02-01T12:00:00Z",
             }
         ],
         service=service,
     )
 
     design_index = header.index("Design")
-    updated_timestamp_index = header.index("LastUpdated")
+    updated_timestamp_index = header.index("UpdatedAt")
     assert service.sheet_rows[1][design_index] == "Updated"
     assert service.sheet_rows[1][updated_timestamp_index] == "2024-02-01T12:00:00Z"
 
 
 def test_delete_rows_removes_matching_entries() -> None:
     header = list(sheets_gateway.REQUIRED_HEADERS)
-    first = _row(RugNo="R-1", LastUpdated="2024-01-01T00:00:00Z", Deleted=False)
-    second = _row(RugNo="R-2", LastUpdated="2024-01-01T00:00:00Z", Deleted=False)
+    first = _row(RugNo="R-1", UpdatedAt="2024-01-01T00:00:00Z", Deleted=False)
+    second = _row(RugNo="R-2", UpdatedAt="2024-01-01T00:00:00Z", Deleted=False)
     data = [header, [first.get(column) for column in header], [second.get(column) for column in header]]
     service = _FakeService(data)
 

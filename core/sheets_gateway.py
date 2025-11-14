@@ -16,7 +16,7 @@ operations required by the importer/exporter tools:
     sheet header row is normalised before the data is uploaded.
 
 ``delete_rows``
-    Remove rows identified by RugNo or SKU and rewrite the worksheet.
+    Remove rows identified by RugNo or UPC and rewrite the worksheet.
 
 The implementation keeps the data transformation logic separate from the
 Google client so that it can be unit tested without hitting the real API.
@@ -56,14 +56,22 @@ SHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
 SHEET_NAME = DEFAULT_WORKSHEET_TITLE
 REQUIRED_HEADERS: Tuple[str, ...] = (
     "RugNo",
+    "UPC",
+    "RollNo",
+    "VtgNo",
+    "VCollection",
     "Collection",
+    "VDesign",
     "Design",
+    "Brand",
     "Ground",
     "Border",
     "ASize",
     "SSize",
     "Area",
     "Type",
+    "Rate",
+    "Amount",
     "Shape",
     "Style",
     "ImageFileName",
@@ -72,16 +80,21 @@ REQUIRED_HEADERS: Tuple[str, ...] = (
     "SP",
     "MSRP",
     "Cost",
-    "Content",
-    "LastUpdated",
+    "Status",
+    "Qty",
+    "Consignment",
+    "Notes",
+    "UpdatedAt",
+    "RowID",
+    "Hash",
     "Deleted",
 )
 
-FLOAT_COLUMNS = {"Area", "Retail", "SP", "MSRP", "Cost"}
-INT_COLUMNS: Set[str] = set()
-DATETIME_COLUMNS = {"LastUpdated"}
+FLOAT_COLUMNS = {"Area", "Retail", "SP", "MSRP", "Cost", "Rate", "Amount"}
+INT_COLUMNS: Set[str] = {"Qty"}
+DATETIME_COLUMNS = {"UpdatedAt"}
 BOOL_COLUMNS = {"Deleted"}
-UPSERT_KEYS = ("RugNo", "SKU")
+UPSERT_KEYS = ("RugNo", "UPC")
 
 MAX_BATCH_CELLS = 1_000
 ROW_FETCH_CHUNK = 2_000
@@ -351,7 +364,7 @@ def _key_for_row(row: Mapping[str, Any]) -> Tuple[str, str]:
         value = row.get(key)
         if value not in (None, ""):
             return key, str(value)
-    raise SheetsGatewayError("Row is missing both RugNo and SKU")
+    raise SheetsGatewayError("Row is missing both RugNo and UPC")
 
 
 def _index_rows(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[Tuple[str, str], int]]:
@@ -490,7 +503,7 @@ def delete_rows(
     spreadsheet_id: str = SHEET_ID,
     worksheet_title: str = SHEET_NAME,
 ) -> None:
-    """Remove rows identified by RugNo or SKU from the worksheet."""
+    """Remove rows identified by RugNo or UPC from the worksheet."""
 
     key_set = {key for key in keys if key}
     if not key_set:
