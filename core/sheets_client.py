@@ -217,6 +217,49 @@ class GoogleSheetsClient:
             results[title] = SheetTabData(title=title, headers=headers, rows=rows)
         return results
 
+    def ensure_tabs_exist(self, titles: Sequence[str]) -> None:
+        """Create any worksheets from ``titles`` that are missing in the workbook."""
+
+        wanted = [title.strip() for title in titles if title and title.strip()]
+        if not wanted:
+            return
+
+        try:
+            metadata = (
+                self._service.spreadsheets()
+                .get(spreadsheetId=self._spreadsheet_id, includeGridData=False, ranges=[])
+                .execute()
+            )
+        except HttpError as exc:
+            raise SheetsApiResponseError(str(exc)) from exc
+
+        sheets_payload = metadata.get("sheets", [])
+        existing: set[str] = set()
+        for sheet in sheets_payload:
+            if not isinstance(sheet, Mapping):
+                continue
+            properties = sheet.get("properties", {})
+            if not isinstance(properties, Mapping):
+                continue
+            title = properties.get("title")
+            if isinstance(title, str):
+                existing.add(title)
+
+        missing = [title for title in wanted if title not in existing]
+        if not missing:
+            return
+
+        requests = [{"addSheet": {"properties": {"title": title}}} for title in missing]
+
+        try:
+            (
+                self._service.spreadsheets()
+                .batchUpdate(spreadsheetId=self._spreadsheet_id, body={"requests": requests})
+                .execute()
+            )
+        except HttpError as exc:
+            raise SheetsApiResponseError(str(exc)) from exc
+
     def update_tabs(
         self,
         payload: Mapping[str, SheetTabData],

@@ -154,9 +154,65 @@ class ExcelSpreadsheetsApi:
             if not path.exists():
                 with open(path, "w", encoding="utf-8") as handle:
                     json.dump({"sheets": {}}, handle)
-            return {"spreadsheetId": str(path)}
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            sheets_payload = [
+                {"properties": {"title": str(title)}}
+                for title in payload.get("sheets", {}).keys()
+            ]
+            return {"spreadsheetId": str(path), "sheets": sheets_payload}
 
         return _ExcelRequest(_noop)
+
+    def batchUpdate(
+        self,
+        spreadsheetId: str,
+        body: Mapping[str, object],
+    ) -> _ExcelRequest:
+        return _ExcelRequest(lambda: self._handle_batch_update(body))
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+    def _load(self) -> Dict[str, List[List[str]]]:
+        path = self._workbook_path
+        if not path.exists():
+            return {}
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        sheets = payload.get("sheets", {})
+        return {title: [list(map(str, row)) for row in rows] for title, rows in sheets.items()}
+
+    def _save(self, sheets: Mapping[str, Sequence[Sequence[str]]]) -> None:
+        path = self._workbook_path
+        if path.parent:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {title: [list(row) for row in rows] for title, rows in sheets.items()}
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"sheets": payload}, handle, indent=2)
+
+    # ------------------------------------------------------------------
+    # Batch update helpers
+    # ------------------------------------------------------------------
+    def _handle_batch_update(self, body: Mapping[str, object]) -> Mapping[str, object]:
+        sheets = self._load()
+        requests = body.get("requests", [])
+        for request in requests:
+            if not isinstance(request, Mapping):
+                continue
+            add_sheet = request.get("addSheet")
+            if not isinstance(add_sheet, Mapping):
+                continue
+            properties = add_sheet.get("properties", {})
+            if not isinstance(properties, Mapping):
+                continue
+            title = properties.get("title")
+            if not isinstance(title, str):
+                continue
+            sheets.setdefault(title, [])
+
+        self._save(sheets)
+        return {}
 
 
 class ExcelService:

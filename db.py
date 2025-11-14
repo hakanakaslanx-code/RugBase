@@ -282,6 +282,9 @@ class SheetsDataStore:
             settings.logs_tab,
             settings.settings_tab,
         ]
+        ensure_tabs = getattr(client, "ensure_tabs_exist", None)
+        if callable(ensure_tabs):
+            ensure_tabs(titles)
         snapshots = client.fetch_tabs(titles, columns=80)
         missing_columns = self._load_inventory(settings, snapshots.get(inventory_title))
         self._load_customers(settings, snapshots.get(settings.customers_tab))
