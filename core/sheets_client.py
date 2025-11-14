@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableSequence, Optional, Sequence
 
 from core.google_credentials import CredentialsFileInvalidError, ensure_service_account_file
+from core.excel_service import ExcelService
 
 try:  # pragma: no cover - optional dependency
     from google.oauth2 import service_account
@@ -257,8 +258,29 @@ class GoogleSheetsClient:
             raise SheetsApiResponseError(str(exc)) from exc
 
 
+def _normalise_path(candidate: str) -> Path:
+    path = Path(candidate).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
+def is_excel_target(spreadsheet_id: str) -> bool:
+    suffix = Path(spreadsheet_id).suffix.lower()
+    if suffix in {".xlsx", ".xls", ".xlsm"}:
+        return True
+    if Path(spreadsheet_id).exists():
+        return True
+    return False
+
+
 def build_client(spreadsheet_id: str, credential_path: Path) -> GoogleSheetsClient:
     """Factory helper used by higher level modules to construct a client."""
+
+    if is_excel_target(spreadsheet_id):
+        path = _normalise_path(spreadsheet_id)
+        service = ExcelService(path)
+        return GoogleSheetsClient(spreadsheet_id=str(path), credential_path=credential_path, service=service)
 
     return GoogleSheetsClient(spreadsheet_id=spreadsheet_id, credential_path=credential_path)
 
@@ -271,6 +293,7 @@ __all__ = [
     "SheetsCredentialsError",
     "SheetsDependencyError",
     "build_client",
+    "is_excel_target",
     "GOOGLE_API_AVAILABLE",
     "a1_full_column_range",
     "a1_headers_range",

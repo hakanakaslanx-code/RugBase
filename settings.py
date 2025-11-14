@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SETTINGS_PATH = str(app_paths.data_path("settings.json"))
 
-DEFAULT_SPREADSHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
+DEFAULT_SPREADSHEET_ID = str(app_paths.data_path("rugbase_inventory.xlsx"))
 DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
 DEFAULT_WORKSHEET_TITLE = "items"
 SYNC_SETTINGS_PATH = str(app_paths.data_path("sync_settings.json"))

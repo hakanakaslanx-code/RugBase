@@ -17,6 +17,7 @@ from core.sheets_client import (
     SheetsClientError,
     SheetsCredentialsError,
     build_client,
+    is_excel_target,
 )
 from settings import DEFAULT_WORKSHEET_TITLE, GoogleSyncSettings, load_google_sync_settings
 
@@ -267,7 +268,7 @@ class SheetsDataStore:
     def initialize(self) -> List[str]:
         settings = load_google_sync_settings()
         credential_path = Path(settings.credential_path)
-        if not credential_path.exists():
+        if not is_excel_target(settings.spreadsheet_id) and not credential_path.exists():
             raise SheetsCredentialsError(
                 f"Credentials not found: {credential_path}"
             )

@@ -31,7 +31,7 @@ class SyncSettingsWindow:
         frame = ttk.Frame(self.window, padding=12)
         frame.grid(row=0, column=0, sticky="nsew")
 
-        ttk.Label(frame, text="Google Sheet ID:").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Workbook path:").grid(row=0, column=0, sticky="w")
         entry = ttk.Entry(frame, textvariable=self.sheet_id_var, width=48)
         entry.grid(row=1, column=0, sticky="ew", pady=(4, 12))
         entry.bind("<FocusOut>", lambda _event: self._persist())
@@ -58,7 +58,7 @@ class SyncSettingsWindow:
     def _on_test_connection(self) -> None:
         sheet_id = self.sheet_id_var.get().strip()
         if not sheet_id:
-            messagebox.showwarning("Sync Settings", "Please enter a Sheet ID.", parent=self.window)
+            messagebox.showwarning("Sync Settings", "Please enter a workbook path.", parent=self.window)
             return
 
         try:
