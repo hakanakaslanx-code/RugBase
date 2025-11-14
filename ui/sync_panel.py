@@ -144,7 +144,7 @@ class SyncPanel(ttk.Frame):
         self.status_banner.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.status_banner.grid_remove()
 
-        form = ttk.LabelFrame(self, text="Google Sheets Settings", padding=12)
+        form = ttk.LabelFrame(self, text="Workbook Sync Settings", padding=12)
         form.grid(row=1, column=0, sticky="nsew")
         form.columnconfigure(1, weight=1)
 

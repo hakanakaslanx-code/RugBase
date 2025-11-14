@@ -32,7 +32,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 from core.google_credentials import ensure_service_account_file
-from settings import DEFAULT_WORKSHEET_TITLE
+from core.sheets_client import is_excel_target
+from core.excel_service import ExcelService
+from settings import DEFAULT_SPREADSHEET_ID, DEFAULT_WORKSHEET_TITLE
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ else:  # pragma: no cover - simple assignment
     GOOGLE_API_AVAILABLE = True
 
 
-SHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
+SHEET_ID = DEFAULT_SPREADSHEET_ID
 SHEET_NAME = DEFAULT_WORKSHEET_TITLE
 REQUIRED_HEADERS: Tuple[str, ...] = (
     "RugNo",
@@ -144,7 +146,12 @@ def _load_credentials(path: Optional[Path] = None):
     return service_account.Credentials.from_service_account_info(payload, scopes=scopes)
 
 
-def _build_service(credentials=None):
+def _build_service(credentials=None, *, spreadsheet_id: Optional[str] = None):
+    if spreadsheet_id and is_excel_target(spreadsheet_id):
+        path = Path(spreadsheet_id).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        return ExcelService(path)
     if not GOOGLE_API_AVAILABLE:
         raise MissingDependencyError(
             "google-api-python-client was not found. Google Sheets sync is disabled."
@@ -157,8 +164,7 @@ def _build_service(credentials=None):
 def build_service_from_file(path: str):
     """Construct a Sheets service using credentials from ``path``."""
 
-    credentials = _load_credentials(Path(path))
-    return _build_service(credentials)
+    return _build_service(credentials=_load_credentials(Path(path)))
 
 
 def _column_letter(index: int) -> str:
@@ -450,7 +456,7 @@ def get_rows(
     """Return all rows from the inventory sheet with type conversion applied."""
 
     if service is None:
-        service = _build_service()
+        service = _build_service(spreadsheet_id=spreadsheet_id)
     headers = _ensure_header_row(service, spreadsheet_id, worksheet_title)
     values = _fetch_values(service, spreadsheet_id, headers, worksheet_title)
     return _rows_from_values(headers, values)
@@ -468,7 +474,7 @@ def upsert_rows(
     if not rows:
         return
     if service is None:
-        service = _build_service()
+        service = _build_service(spreadsheet_id=spreadsheet_id)
     headers = _ensure_header_row(service, spreadsheet_id, worksheet_title)
     existing_values = _fetch_values(service, spreadsheet_id, headers, worksheet_title)
     current_rows = _rows_from_values(headers, existing_values)
@@ -509,7 +515,7 @@ def delete_rows(
     if not key_set:
         return
     if service is None:
-        service = _build_service()
+        service = _build_service(spreadsheet_id=spreadsheet_id)
     headers = _ensure_header_row(service, spreadsheet_id, worksheet_title)
     existing_values = _fetch_values(service, spreadsheet_id, headers, worksheet_title)
     current_rows = _rows_from_values(headers, existing_values)
