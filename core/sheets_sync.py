@@ -1063,6 +1063,10 @@ def ensure_sheet(service, spreadsheet_id: str, worksheet_title: str) -> int:
 
     resolved_title = require_worksheet_title(worksheet_title)
 
+    logger.debug(
+        "Ensuring worksheet \"%s\" exists on spreadsheet %s", resolved_title, parsed_id
+    )
+
     return _ensure_sheet_structure(service, parsed_id, resolved_title)
 
 

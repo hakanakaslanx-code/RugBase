@@ -522,15 +522,14 @@ def _prepare_item_payload(
     sold_at = record.get("sold_at")
     record["sold_at"] = _normalize_timestamp(sold_at) if sold_at else None
 
-    record["created_at"] = (
-        existing.get("created_at") if existing and existing.get("created_at") else _utc_now_iso()
-    )
+    created_at = record.get("created_at")
+    record["created_at"] = created_at or _utc_now_iso()
     if override_version is not None:
         record["version"] = max(int(override_version), 1)
     else:
         current_version = _coerce_int(record.get("version"), default=1)
         if existing:
-            current_version = max(_coerce_int(existing.get("version"), default=1) + 1, current_version)
+            current_version = max(_coerce_int(record.get("version"), default=1) + 1, current_version)
         record["version"] = max(current_version, 1)
 
     payload: Dict[str, Any] = {column: record.get(column) for column in ITEM_COLUMN_DEFINITIONS}
