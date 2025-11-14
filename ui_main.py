@@ -633,7 +633,14 @@ class MainWindow:
         ttk.Button(button_row, text="Upload JSON", command=self._on_upload_credentials).pack(
             side=tk.LEFT, padx=(0, 8)
         )
-        ttk.Button(button_row, text="Try Again", command=self.on_sync_now).pack(side=tk.LEFT)
+        ttk.Button(button_row, text="Try Again", command=self.on_sync_now).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(
+            button_row,
+            text="Configure Settings",
+            command=self._open_sync_settings_window,
+        ).pack(side=tk.LEFT)
 
         ttk.Label(
             inner,
@@ -1796,6 +1803,9 @@ class MainWindow:
         tools_menu = tk.Menu(menubar, tearoff=0)
         tools_menu.add_command(label="Open Debug Log", command=self.open_debug_log)
         tools_menu.add_command(label="Open Data Folder", command=self.open_data_folder)
+        tools_menu.add_command(
+            label="Sync Settings", command=self._open_sync_settings_window
+        )
         tools_menu.add_separator()
         tools_menu.add_checkbutton(
             label="Enable Night Mode",
