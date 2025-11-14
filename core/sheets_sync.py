@@ -276,6 +276,7 @@ def parse_spreadsheet_id(value: str) -> str:
 
     if not value:
         return ""
+
     value = value.strip()
     if "/spreadsheets/d/" in value:
         value = value.split("/spreadsheets/d/", 1)[1]
@@ -284,6 +285,16 @@ def parse_spreadsheet_id(value: str) -> str:
         value = value.split("?", 1)[0]
     if "#" in value:
         value = value.split("#", 1)[0]
+
+    if any(sep in value for sep in ("/", "\\", ":")):
+        raise SpreadsheetAccessError(
+            "Spreadsheet ID appears to be a file path. Please provide a valid Google Sheets ID."
+        )
+    if len(value) < 15:
+        raise SpreadsheetAccessError(
+            "Spreadsheet ID is too short. Please provide a valid Google Sheets ID."
+        )
+
     return value
 
 

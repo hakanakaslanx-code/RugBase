@@ -17,7 +17,7 @@ DEFAULT_SETTINGS_PATH = str(app_paths.data_path("settings.json"))
 
 DEFAULT_SPREADSHEET_ID = os.getenv(
     "RUGBASE_SPREADSHEET_ID",
-    str(app_paths.data_path("rugbase_inventory.xlsx")),
+    "",
 )
 DEFAULT_SERVICE_ACCOUNT_EMAIL = os.getenv("RUGBASE_SERVICE_ACCOUNT_EMAIL", "")
 DEFAULT_WORKSHEET_TITLE = "items"
