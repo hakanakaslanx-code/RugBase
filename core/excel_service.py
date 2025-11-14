@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+
+from openpyxl import Workbook, load_workbook
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,52 @@ class _ExcelRequest:
 
     def execute(self) -> Mapping[str, object]:
         return self._callback()
+
+
+def _load_workbook_data(path: Path) -> Dict[str, List[List[str]]]:
+    if not path.exists():
+        return {}
+
+    workbook = load_workbook(path)
+    sheets: Dict[str, List[List[str]]] = {}
+    for worksheet in workbook.worksheets:
+        rows: List[List[str]] = []
+        for row in worksheet.iter_rows(values_only=True):
+            values = ["" if cell is None else str(cell) for cell in row]
+            while values and values[-1] == "":
+                values.pop()
+            rows.append(values)
+        while rows and (not rows[-1] or all(cell == "" for cell in rows[-1])):
+            rows.pop()
+        sheets[worksheet.title] = rows
+    return sheets
+
+
+def _save_workbook_data(path: Path, sheets: Mapping[str, Sequence[Sequence[str]]]) -> None:
+    if path.parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    workbook = Workbook()
+    active = workbook.active
+    active.delete_rows(1, active.max_row)
+
+    iterator = iter(sheets.items())
+    try:
+        first_title, first_rows = next(iterator)
+    except StopIteration:
+        workbook.save(path)
+        return
+
+    active.title = first_title
+    for row in first_rows:
+        active.append(list(row))
+
+    for title, rows in iterator:
+        worksheet = workbook.create_sheet(title=title)
+        for row in rows:
+            worksheet.append(list(row))
+
+    workbook.save(path)
 
 
 class ExcelValuesApi:
@@ -50,21 +97,10 @@ class ExcelValuesApi:
     # Persistence helpers
     # ------------------------------------------------------------------
     def _load(self) -> Dict[str, List[List[str]]]:
-        path = self._workbook_path
-        if not path.exists():
-            return {}
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        sheets = payload.get("sheets", {})
-        return {title: [list(map(str, row)) for row in rows] for title, rows in sheets.items()}
+        return _load_workbook_data(self._workbook_path)
 
     def _save(self, sheets: Mapping[str, Sequence[Sequence[str]]]) -> None:
-        path = self._workbook_path
-        if path.parent:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {title: [list(row) for row in rows] for title, rows in sheets.items()}
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"sheets": payload}, handle, indent=2)
+        _save_workbook_data(self._workbook_path, sheets)
 
     # ------------------------------------------------------------------
     # Range operations
@@ -149,16 +185,12 @@ class ExcelSpreadsheetsApi:
     ) -> _ExcelRequest:
         def _noop() -> Mapping[str, object]:
             path = self._workbook_path
-            if not path.exists() and path.parent:
-                path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists():
-                with open(path, "w", encoding="utf-8") as handle:
-                    json.dump({"sheets": {}}, handle)
-            with open(path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
+                _save_workbook_data(path, {})
+            sheets = _load_workbook_data(path)
             sheets_payload = [
                 {"properties": {"title": str(title)}}
-                for title in payload.get("sheets", {}).keys()
+                for title in sheets.keys()
             ]
             return {"spreadsheetId": str(path), "sheets": sheets_payload}
 
@@ -175,21 +207,10 @@ class ExcelSpreadsheetsApi:
     # Persistence helpers
     # ------------------------------------------------------------------
     def _load(self) -> Dict[str, List[List[str]]]:
-        path = self._workbook_path
-        if not path.exists():
-            return {}
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        sheets = payload.get("sheets", {})
-        return {title: [list(map(str, row)) for row in rows] for title, rows in sheets.items()}
+        return _load_workbook_data(self._workbook_path)
 
     def _save(self, sheets: Mapping[str, Sequence[Sequence[str]]]) -> None:
-        path = self._workbook_path
-        if path.parent:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {title: [list(row) for row in rows] for title, rows in sheets.items()}
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"sheets": payload}, handle, indent=2)
+        _save_workbook_data(self._workbook_path, sheets)
 
     # ------------------------------------------------------------------
     # Batch update helpers
@@ -216,7 +237,7 @@ class ExcelSpreadsheetsApi:
 
 
 class ExcelService:
-    """Minimal Sheets API drop-in that stores worksheets in JSON files."""
+    """Minimal Sheets API drop-in that persists worksheets as ``.xlsx`` files."""
 
     def __init__(self, workbook_path: Path) -> None:
         self._workbook_path = workbook_path
