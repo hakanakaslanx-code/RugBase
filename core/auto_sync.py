@@ -101,6 +101,12 @@ class AutoSyncController:
             self._notify_status("disabled", {"reason": "credentials"})
             return
 
+        try:
+            worksheet_title = sheets_sync.require_worksheet_title(settings.worksheet_title)
+        except sheets_sync.SpreadsheetAccessError as exc:
+            self._notify_status("disabled", {"reason": "worksheet", "message": str(exc)})
+            return
+
         local_updated_at = db.get_max_item_updated_at()
         local_hash = None
         db_path = Path(db.DB_PATH)
@@ -118,7 +124,7 @@ class AutoSyncController:
 
         try:
             remote_updated_at = sheets_sync.latest_remote_updated_at(
-                client, parsed_id, settings.worksheet_title or sheets_sync.DEFAULT_WORKSHEET_TITLE
+                client, parsed_id, worksheet_title
             )
         except sheets_sync.SheetsSyncError as exc:
             self._notify_status("offline", {"message": str(exc)})
@@ -137,8 +143,6 @@ class AutoSyncController:
         if not (has_local_changes or has_remote_changes or has_outbox):
             self._notify_status("idle", {})
             return
-
-        worksheet_title = settings.worksheet_title or sheets_sync.DEFAULT_WORKSHEET_TITLE
 
         try:
             pull_stats = sheets_sync.pull(

@@ -85,6 +85,8 @@ def _normalise_title(title: str) -> str:
     """Return a worksheet title quoted according to A1 notation rules."""
 
     safe = (title or "").strip()
+    if not safe:
+        raise SheetsClientError("Worksheet title must be configured in Sync Settings.")
     safe = safe.replace("'", "''")
     return f"'{safe}'"
 
@@ -102,8 +104,8 @@ def _column_letter(index: int) -> str:
 def _range_for_title(title: str, *, columns: int = 26) -> str:
     """Return an A1 range covering ``columns`` columns for ``title``."""
 
-    end_column = _column_letter(columns)
-    return f"{_normalise_title(title)}!A1:{end_column}"
+    _ = columns  # retained for backwards compatibility of the signature
+    return f"{_normalise_title(title)}!A:ZZ"
 
 
 def _build_service(path: Path):

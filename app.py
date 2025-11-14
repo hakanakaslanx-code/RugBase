@@ -12,7 +12,7 @@ from core.logging_config import configure_logging
 from core.version import __version__
 from core.single_instance import SingleInstanceError, acquire_instance_lock
 from ui_main import MainWindow
-from core.sheets_client import SheetsClientError
+from core.sheets_client import SheetsClientError, SheetsCredentialsError
 
 
 def _notify_already_running() -> None:
@@ -41,8 +41,14 @@ def main() -> None:
     with instance_lock:
         initial_online = True
         init_error: Optional[str] = None
+        force_sync_settings = False
         try:
             column_changes = db.initialize_database()
+        except SheetsCredentialsError as exc:
+            column_changes = []
+            initial_online = False
+            init_error = str(exc)
+            force_sync_settings = True
         except SheetsClientError as exc:
             column_changes = []
             initial_online = False
@@ -56,6 +62,7 @@ def main() -> None:
             column_changes=column_changes,
             initial_online=initial_online,
             initial_error=init_error,
+            force_sync_settings=force_sync_settings,
         )
         root.mainloop()
 

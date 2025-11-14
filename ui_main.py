@@ -25,6 +25,7 @@ from ttkbootstrap import Style
 from settings import DEFAULT_CREDENTIALS_PATH, load_google_sync_settings, save_google_sync_settings
 from core.google_credentials import CredentialsFileInvalidError, ensure_service_account_file
 from core.sheets_client import SheetsClientError
+from ui.sync_settings import SyncSettingsWindow
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ class MainWindow:
         *,
         initial_online: bool = True,
         initial_error: Optional[str] = None,
+        force_sync_settings: bool = False,
     ) -> None:
         self.root = root
         self.label_window: Optional[LabelGeneratorWindow] = None
@@ -133,6 +135,8 @@ class MainWindow:
         self._conflict_toast_job: Optional[str] = None
         self.sync_manager = InventorySyncManager(status_callback=self._handle_sync_status)
         self._initial_error = initial_error
+        self._force_sync_settings = force_sync_settings
+        self._sync_settings_window: Optional[SyncSettingsWindow] = None
         self._configure_style()
         self._create_widgets()
         self._apply_offline_state(not initial_online)
@@ -146,6 +150,8 @@ class MainWindow:
         self._update_user_status()
         self._start_sync_workers()
         self._update_connection_view()
+        if self._force_sync_settings:
+            self.root.after(200, self._open_sync_settings_window)
 
     def _start_sync_workers(self) -> None:
         def _bootstrap() -> None:
@@ -651,6 +657,24 @@ class MainWindow:
         self.connection_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.connection_overlay.lift()
         self._apply_offline_state(True)
+
+    def _open_sync_settings_window(self) -> None:
+        existing = getattr(self, "_sync_settings_window", None)
+        if existing and existing.window.winfo_exists():
+            existing.window.lift()
+            existing.window.focus_force()
+            return
+        self._sync_settings_window = SyncSettingsWindow(self.root)
+        self._sync_settings_window.window.protocol("WM_DELETE_WINDOW", self._on_sync_settings_closed)
+
+    def _on_sync_settings_closed(self) -> None:
+        if self._sync_settings_window:
+            try:
+                if self._sync_settings_window.window.winfo_exists():
+                    self._sync_settings_window.window.destroy()
+            except tk.TclError:
+                pass
+        self._sync_settings_window = None
 
     def _on_upload_credentials(self) -> None:
         path = filedialog.askopenfilename(

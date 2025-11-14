@@ -42,12 +42,19 @@ def _normalise_private_key(key: str) -> str:
 
 def _load_json(path: Path) -> Mapping[str, object]:
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CredentialsFileInvalidError(
-            "JSON eksik alanlar: " + ", ".join(REQUIRED_FIELDS)
-        ) from exc
+        with path.open("r", encoding="utf-8-sig") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        raise CredentialsFileInvalidError(f"JSON dosyası okunamadı: {exc}") from exc
+
+    payload_text = raw.lstrip("\ufeff").strip()
+    if not payload_text:
+        raise CredentialsFileInvalidError("Service account JSON içeriği boş.")
+
+    try:
+        return json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        raise CredentialsFileInvalidError(f"JSON parse hatası: {exc.msg}") from exc
 
 
 def _validate_payload(payload: Mapping[str, object]) -> Dict[str, object]:
