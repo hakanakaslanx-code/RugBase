@@ -124,7 +124,7 @@ class MainWindow:
         self.customer_form_vars: Dict[str, tk.StringVar] = {}
         self.customer_notes_text: Optional[tk.Text] = None
         self.customer_tree: Optional[ttk.Treeview] = None
-        self.customer_records: Dict[int, Dict[str, Any]] = {}
+        self.customer_records: Dict[str, Dict[str, Any]] = {}
         self.sales_period_days: Optional[int] = 30
         self.column_status_var = tk.StringVar(value="")
         self._startup_column_changes = list(column_changes or [])
@@ -1447,9 +1447,10 @@ class MainWindow:
 
         self.customer_records = {}
         for record in customers:
-            customer_id = int(record.get("id")) if record.get("id") is not None else None
-            if customer_id is None:
+            raw_id = record.get("id")
+            if raw_id is None:
                 continue
+            customer_id = str(raw_id)
             self.customer_records[customer_id] = record
             updated = record.get("updated_at") or ""
             if updated:
@@ -1461,7 +1462,7 @@ class MainWindow:
                 record.get("city") or "",
                 updated,
             )
-            self.customer_tree.insert("", tk.END, iid=str(customer_id), values=values)
+            self.customer_tree.insert("", tk.END, iid=customer_id, values=values)
 
     def filter_customer_records(self) -> None:
         """Refresh the customer list based on the current search entry."""
@@ -1495,16 +1496,13 @@ class MainWindow:
             self.customer_search_var.set("")
         self.load_customers()
 
-    def get_selected_customer_id(self) -> Optional[int]:
+    def get_selected_customer_id(self) -> Optional[str]:
         if not self.customer_tree:
             return None
         selected = self.customer_tree.selection()
         if not selected:
             return None
-        try:
-            return int(selected[0])
-        except (TypeError, ValueError):
-            return None
+        return selected[0]
 
     def on_customer_double_click(self, _event: tk.Event) -> None:
         customer_id = self.get_selected_customer_id()
@@ -1518,7 +1516,7 @@ class MainWindow:
             return
         self.open_customer_dialog(customer_id)
 
-    def open_customer_dialog(self, customer_id: Optional[int] = None) -> None:
+    def open_customer_dialog(self, customer_id: Optional[str] = None) -> None:
         record = None
         if customer_id is not None:
             record = db.fetch_customer(customer_id)
@@ -1530,7 +1528,7 @@ class MainWindow:
     def _on_customer_saved(self, record: Dict[str, Any]) -> None:
         self.load_customers()
         if record.get("id"):
-            self.customer_records[int(record["id"])] = record
+            self.customer_records[str(record["id"])] = record
         self.log_activity("Customer saved")
 
     def save_customer_from_form(self) -> None:
@@ -1553,7 +1551,7 @@ class MainWindow:
         record = db.fetch_customer(customer_id)
         if record:
             messagebox.showinfo("Add Customer", "Customer added successfully.")
-            self.customer_records[int(customer_id)] = record
+            self.customer_records[str(customer_id)] = record
             self.log_activity("Added customer")
 
     def clear_customer_form(self) -> None:
@@ -1943,7 +1941,7 @@ class CustomerDialog:
         data["notes"] = self.notes_text.get("1.0", tk.END).strip()
         try:
             if self.customer.get("id"):
-                customer_id = int(self.customer["id"])
+                customer_id = str(self.customer["id"])
                 db.update_customer(customer_id, data)
             else:
                 customer_id = db.create_customer(data)
@@ -2062,12 +2060,12 @@ class MarkSoldDialog:
             self.on_customer_created(record)
         self._load_customers(select_id=record.get("id"))
 
-    def _selected_customer_id(self) -> Optional[int]:
+    def _selected_customer_id(self) -> Optional[str]:
         index = self.customer_combo.current()
         if index < 0 or index >= len(self.customer_options):
             return None
         try:
-            return int(self.customer_options[index]["id"])
+            return str(self.customer_options[index]["id"])
         except (TypeError, ValueError, KeyError):
             return None
 
