@@ -14,8 +14,8 @@ Image = None  # type: ignore[assignment]
 ImageDraw = None  # type: ignore[assignment]
 ImageFont = None  # type: ignore[assignment]
 PIL_IMPORT_MESSAGE = (
-    "Pillow (PIL) gerekli. Etiket önizleme ve yazdırma özellikleri için"
-    " kurulum yapın ve ardından uygulamayı yeniden başlatın."
+    "Pillow (PIL) is required. Install it to enable label preview and printing,"
+    " then restart the application."
 )
 
 
@@ -50,8 +50,8 @@ def ensure_pillow() -> bool:
         return True
 
     PIL_IMPORT_MESSAGE = (
-        "Pillow (PIL) gerekli. 'Pillow Kur' seçeneğini kullanarak kurulumu"
-        " tamamlayın ve işlem sonrası uygulamayı yeniden başlatın."
+        "Pillow (PIL) is required. Use the 'Install Pillow' option to complete the"
+        " installation and restart the application afterwards."
     )
     return False
 

@@ -45,4 +45,4 @@ def test_load_service_account_data_requires_fields(tmp_path: Path) -> None:
         load_service_account_data(path)
 
     assert "CredentialsFileInvalidError" not in str(excinfo.value)
-    assert "JSON eksik alanlar" in str(excinfo.value)
+    assert "JSON missing fields" in str(excinfo.value)

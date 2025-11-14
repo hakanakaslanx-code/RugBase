@@ -45,16 +45,16 @@ def _load_json(path: Path) -> Mapping[str, object]:
         with path.open("r", encoding="utf-8-sig") as handle:
             raw = handle.read()
     except OSError as exc:
-        raise CredentialsFileInvalidError(f"JSON dosyası okunamadı: {exc}") from exc
+        raise CredentialsFileInvalidError(f"JSON file could not be read: {exc}") from exc
 
     payload_text = raw.lstrip("\ufeff").strip()
     if not payload_text:
-        raise CredentialsFileInvalidError("Service account JSON içeriği boş.")
+        raise CredentialsFileInvalidError("Service account JSON content is empty.")
 
     try:
         return json.loads(payload_text)
     except json.JSONDecodeError as exc:
-        raise CredentialsFileInvalidError(f"JSON parse hatası: {exc.msg}") from exc
+        raise CredentialsFileInvalidError(f"JSON parse error: {exc.msg}") from exc
 
 
 def _validate_payload(payload: Mapping[str, object]) -> Dict[str, object]:
@@ -71,7 +71,7 @@ def _validate_payload(payload: Mapping[str, object]) -> Dict[str, object]:
 
     if missing:
         ordered = ", ".join(sorted(dict.fromkeys(missing)))
-        raise CredentialsFileInvalidError(f"JSON eksik alanlar: {ordered}")
+        raise CredentialsFileInvalidError(f"JSON missing fields: {ordered}")
 
     private_key = str(data["private_key"])
     data["private_key"] = _normalise_private_key(private_key)

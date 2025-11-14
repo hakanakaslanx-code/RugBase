@@ -103,7 +103,7 @@ class InventorySyncManager:
         self._online = db.is_online()
         if self._online:
             self._last_sync = _utc_now_iso()
-            self._notify_status(message="Veriler güncellendi" if changed else None)
+            self._notify_status(message="Data updated" if changed else None)
         else:
             self._notify_status(error=db.last_sync_error())
         return self._online
@@ -119,7 +119,7 @@ class InventorySyncManager:
                 self._sync_once(force_pull=triggered)
             except SheetsClientError:
                 logger.exception("Background sync cycle failed")
-                self._set_offline("Senkronizasyon hatası")
+                self._set_offline("Synchronization error")
 
     def _notify_status(
         self,
@@ -155,11 +155,11 @@ class InventorySyncManager:
             raise
         self._online = db.is_online()
         if not self._online:
-            self._set_offline(db.last_sync_error() or "Bağlantı kurulamadı")
+            self._set_offline(db.last_sync_error() or "Unable to connect")
             return
         if changed or force_pull:
             self._last_sync = _utc_now_iso()
-            self._notify_status(message="Veriler güncellendi")
+            self._notify_status(message="Data updated")
         else:
             self._notify_status()
 
