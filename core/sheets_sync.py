@@ -83,47 +83,50 @@ _DEBOUNCE_STATE: Dict[str, float] = {}
 # ---------------------------------------------------------------------------
 # Sheet configuration
 # ---------------------------------------------------------------------------
-HEADERS: List[str] = [
-    "RowID",
+ITEM_HEADER_SEQUENCE: Tuple[str, ...] = (
     "RugNo",
-    "SKU",
-    "Title",
+    "UPC",
+    "RollNo",
+    "VtgNo",
+    "VCollection",
     "Collection",
+    "VDesign",
+    "Design",
+    "Brand",
+    "Ground",
+    "Border",
+    "ASize",
+    "SSize",
+    "Area",
+    "Type",
+    "Rate",
+    "Amount",
+    "Shape",
     "Style",
+    "ImageFileName",
     "Origin",
-    "Material",
-    "Weave",
-    "Size",
-    "Size_Std",
-    "Color",
-    "PileHeight",
-    "Age",
-    "Condition",
+    "Retail",
+    "SP",
     "MSRP",
-    "Price",
     "Cost",
-    "Currency",
-    "Location",
-    "Qty",
+)
+
+EXTRA_ITEM_HEADERS: Tuple[str, ...] = (
     "Status",
+    "Qty",
     "Consignment",
-    "RoomScene",
-    "ImageURLs",
-    "Barcode",
-    "Tags",
     "Notes",
-    "SoldAt",
-    "CustomerId",
-    "SalePrice",
-    "SaleNote",
     "UpdatedAt",
+    "RowID",
     "Hash",
     "Deleted",
-]
+)
+
+HEADERS: List[str] = list(ITEM_HEADER_SEQUENCE) + list(EXTRA_ITEM_HEADERS)
 
 DEFAULT_WORKSHEET_TITLE = "items"
-META_SHEET_TITLE = "meta"
-LOG_SHEET_TITLE = "sync_logs"
+META_SHEET_TITLE = "Settings"
+LOG_SHEET_TITLE = "Logs"
 SCOPES: Iterable[str] = ("https://www.googleapis.com/auth/spreadsheets",)
 OFFLINE_QUEUE_MESSAGE = "Offline, change saved → will send when back online"
 
@@ -151,69 +154,52 @@ CREATE TABLE IF NOT EXISTS sheet_sync_meta (
 META_KEYS = ("db_version", "last_sync_utc", "last_pull_utc")
 
 LOCAL_TO_SHEET_FIELD_MAP: Mapping[str, Optional[str]] = {
-    "RowID": "item_id",
     "RugNo": "rug_no",
-    "SKU": "upc",
-    "Title": "design",
+    "UPC": "upc",
+    "RollNo": "roll_no",
+    "VtgNo": "v_rug_no",
+    "VCollection": "v_collection",
     "Collection": "collection",
+    "VDesign": "v_design",
+    "Design": "design",
+    "Brand": "brand_name",
+    "Ground": "ground",
+    "Border": "border",
+    "ASize": "a_size",
+    "SSize": "st_size",
+    "Area": "area",
+    "Type": "type",
+    "Rate": "rate",
+    "Amount": "amount",
+    "Shape": "shape",
     "Style": "style",
+    "ImageFileName": "image_file_name",
     "Origin": "origin",
-    "Material": None,
-    "Weave": None,
-    "Size": "st_size",
-    "Size_Std": "a_size",
-    "Color": "ground",
-    "PileHeight": None,
-    "Age": None,
-    "Condition": None,
+    "Retail": "retail",
+    "SP": "sp",
     "MSRP": "msrp",
-    "Price": "retail",
     "Cost": "cost",
-    "Currency": None,
-    "Location": "location",
-    "Qty": "qty",
     "Status": "status",
+    "Qty": "qty",
     "Consignment": "consignment_id",
-    "RoomScene": None,
-    "ImageURLs": "image_file_name",
-    "Barcode": "upc",
-    "Tags": "brand_name",
-    "Notes": None,
-    "SoldAt": "sold_at",
-    "CustomerId": "customer_id",
-    "SalePrice": "sale_price",
-    "SaleNote": "sale_note",
+    "Notes": "sale_note",
     "UpdatedAt": "updated_at",
+    "RowID": "item_id",
+    "Hash": None,
     "Deleted": None,
 }
 
 CUSTOMER_SHEET_TITLE = "Customers"
 CUSTOMER_HEADERS: Tuple[str, ...] = (
-    "Id",
-    "FullName",
+    "Name",
     "Phone",
     "Email",
-    "Address",
-    "City",
-    "State",
-    "Zip",
-    "Notes",
-    "CreatedAt",
-    "UpdatedAt",
 )
 
 CUSTOMER_FIELD_MAP: Mapping[str, str] = {
-    "Id": "id",
-    "FullName": "full_name",
+    "Name": "full_name",
     "Phone": "phone",
     "Email": "email",
-    "Address": "address",
-    "City": "city",
-    "State": "state",
-    "Zip": "zip",
-    "Notes": "notes",
-    "CreatedAt": "created_at",
-    "UpdatedAt": "updated_at",
 }
 
 
@@ -629,8 +615,8 @@ def _sqlite_row_to_sheet(row: sqlite3.Row) -> SheetRow:
         else:
             values[header] = ""
     status = (record.get("status") or "").strip()
+    values["Status"] = status or "active"
     values["Deleted"] = "TRUE" if status in {"archived", "deleted"} else ""
-    values["Currency"] = values.get("Currency") or "USD"
     values["UpdatedAt"] = values.get("UpdatedAt") or record.get("updated_at") or ""
     if not values["UpdatedAt"]:
         values["UpdatedAt"] = _utcnow_iso()
@@ -638,9 +624,6 @@ def _sqlite_row_to_sheet(row: sqlite3.Row) -> SheetRow:
     values["Qty"] = str(qty_value if qty_value is not None else 0)
     consignment = record.get("consignment_id")
     values["Consignment"] = "" if consignment is None else str(consignment)
-    values["Tags"] = values.get("Tags") or (record.get("brand_name") or "")
-    values["Barcode"] = values.get("Barcode") or (record.get("upc") or "")
-    values["Title"] = values.get("Title") or (record.get("design") or "")
     values["RowID"] = str(record.get("item_id"))
     values["Hash"] = calc_hash(values)
     return SheetRow(row_id=values["RowID"], values=values, hash=values["Hash"])
@@ -825,7 +808,7 @@ def _ensure_sheet_structure(
                 "addSheet": {
                     "properties": {
                         "title": LOG_SHEET_TITLE,
-                        "gridProperties": {"rowCount": 100, "columnCount": 6},
+                        "gridProperties": {"rowCount": 100, "columnCount": 2},
                     }
                 }
             }
@@ -907,9 +890,9 @@ def _ensure_sheet_structure(
     # Apply formatting (freeze header, filters, validation, currency)
     status_index = _column_to_index("Status")
     price_columns = [
-        _column_to_index("Price"),
-        _column_to_index("Cost"),
-        _column_to_index("MSRP"),
+        _column_to_index(column)
+        for column in ("Retail", "SP", "MSRP", "Cost", "Rate", "Amount")
+        if column in HEADERS
     ]
     format_requests = [
         {
@@ -991,13 +974,13 @@ def _ensure_sheet_structure(
             [
                 {
                     "range": meta_header_range,
-                    "values": [["key", "value"]],
+                    "values": [["Key", "Value"]],
                 }
             ],
         )
 
     # Ensure log sheet headers exist
-    log_header_range = _a1_range(LOG_SHEET_TITLE, "A1:F1")
+    log_header_range = _a1_range(LOG_SHEET_TITLE, "A1:B1")
     log_current = _values_batch_get(service, spreadsheet_id, [log_header_range])
     log_values = log_current.get("valueRanges", [{}])[0].get("values", [])
     if not log_values:
@@ -1007,7 +990,7 @@ def _ensure_sheet_structure(
             [
                 {
                     "range": log_header_range,
-                    "values": [["timestamp", "direction", "action", "rows", "duration", "retries"]],
+                    "values": [["Timestamp", "Action"]],
                 }
             ],
         )
@@ -1072,10 +1055,13 @@ def _append_sync_log(
     existing = _values_batch_get(service, spreadsheet_id, [log_sheet_range])
     entries = existing.get("valueRanges", [{}])[0].get("values", [])
     next_row = len(entries) + 1
+    message = (
+        f"{direction}:{action} rows={rows} duration={duration:.3f}s retries={retries}"
+    )
     data = [
         {
-            "range": _a1_range(LOG_SHEET_TITLE, f"A{next_row}:F{next_row}"),
-            "values": [[timestamp, direction, action, str(rows), f"{duration:.3f}", str(retries)]],
+            "range": _a1_range(LOG_SHEET_TITLE, f"A{next_row}:B{next_row}"),
+            "values": [[timestamp, message]],
         }
     ]
     _values_batch_update(service, spreadsheet_id, data)
@@ -1124,7 +1110,7 @@ def _write_remote_meta(
         if len(row) >= 2:
             meta_map[row[0]] = row[1]
     meta_map.update(updates)
-    ordered = [["key", "value"]]
+    ordered = [["Key", "Value"]]
     for key in META_KEYS:
         if key in meta_map:
             ordered.append([key, meta_map[key]])
@@ -1240,28 +1226,35 @@ def _sheet_row_to_db_payload(row: Mapping[str, Any]) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "item_id": row.get("RowID"),
         "rug_no": row.get("RugNo"),
-        "upc": row.get("SKU") or row.get("Barcode"),
-        "design": row.get("Title"),
+        "upc": row.get("UPC"),
+        "roll_no": row.get("RollNo"),
+        "v_rug_no": row.get("VtgNo"),
+        "v_collection": row.get("VCollection"),
         "collection": row.get("Collection"),
-        "style": row.get("Style"),
-        "origin": row.get("Origin"),
-        "st_size": row.get("Size"),
-        "a_size": row.get("Size_Std"),
-        "ground": row.get("Color"),
+        "v_design": row.get("VDesign"),
+        "design": row.get("Design"),
+        "brand_name": row.get("Brand"),
+        "ground": row.get("Ground"),
         "msrp": row.get("MSRP"),
-        "retail": row.get("Price"),
+        "retail": row.get("Retail"),
+        "sp": row.get("SP"),
         "cost": row.get("Cost"),
-        "location": row.get("Location"),
+        "border": row.get("Border"),
+        "a_size": row.get("ASize"),
+        "st_size": row.get("SSize"),
+        "area": row.get("Area"),
+        "type": row.get("Type"),
+        "rate": row.get("Rate"),
+        "amount": row.get("Amount"),
+        "shape": row.get("Shape"),
+        "style": row.get("Style"),
+        "image_file_name": row.get("ImageFileName"),
+        "origin": row.get("Origin"),
         "qty": _to_int(row.get("Qty"), default=0),
         "status": row.get("Status") or "active",
         "consignment_id": row.get("Consignment"),
-        "image_file_name": row.get("ImageURLs"),
-        "brand_name": row.get("Tags"),
+        "sale_note": row.get("Notes"),
         "updated_at": row.get("UpdatedAt"),
-        "sold_at": row.get("SoldAt"),
-        "customer_id": row.get("CustomerId"),
-        "sale_price": row.get("SalePrice"),
-        "sale_note": row.get("SaleNote"),
     }
     if str(row.get("Deleted", "")).upper() == "TRUE":
         payload["status"] = "archived"
