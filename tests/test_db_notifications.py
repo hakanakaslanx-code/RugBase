@@ -30,7 +30,7 @@ def google_settings(tmp_path, monkeypatch):
         spreadsheet_id="TEST",
         credential_path=str(credentials),
         worksheet_title="items",
-        inventory_tab="Inventory",
+        inventory_tab="items",
         customers_tab="Customers",
         logs_tab="Logs",
         settings_tab="Settings",
@@ -42,7 +42,7 @@ def google_settings(tmp_path, monkeypatch):
 @pytest.fixture
 def fake_client(monkeypatch, google_settings):
     tabs = {
-        "Inventory": SheetTabData(title="Inventory", headers=["ItemId", "RugNo", "Retail"], rows=[]),
+        "items": SheetTabData(title="items", headers=["ItemId", "RugNo", "Retail"], rows=[]),
         "Customers": SheetTabData(title="Customers", headers=[], rows=[]),
         "Logs": SheetTabData(title="Logs", headers=[], rows=[]),
         "Settings": SheetTabData(title="Settings", headers=[], rows=[]),
@@ -79,11 +79,11 @@ def test_upsert_notifies_registered_listeners(fake_client, google_settings):
 
 def test_initialize_database_parses_numeric(fake_client, google_settings):
     inventory = SheetTabData(
-        title="Inventory",
+        title="items",
         headers=["ItemId", "RugNo", "Retail", "UpdatedAt"],
         rows=[["ITEM-1", "RUG-100", "$1.234,56", "2023-01-01T10:00:00Z"]],
     )
-    fake_client.tabs["Inventory"] = inventory
+    fake_client.tabs["items"] = inventory
 
     db.initialize_database()
     items = db.fetch_items()

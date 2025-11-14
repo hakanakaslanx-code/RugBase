@@ -15,7 +15,7 @@ from core import sheets_client, sheets_sync
     [
         ("items", "items"),
         (" items ", "items"),
-        ("'Inventory'", "Inventory"),
+        ("'Legacy'", "Legacy"),
         ('"Stock"', "Stock"),
     ],
 )
@@ -27,10 +27,10 @@ def test_require_worksheet_title_strips_wrapping_quotes(raw, expected):
     "title, expected",
     [
         ("items", "'items'"),
-        ("Inventory", "'Inventory'"),
+        ("Legacy", "'Legacy'"),
         ("Sheet Name", "'Sheet Name'"),
         ("Bob's Rugs", "'Bob''s Rugs'"),
-        ("'Inventory'", "'Inventory'"),
+        ("'Legacy'", "'Legacy'"),
     ],
 )
 def test_quote_title_always_wraps_in_single_quotes(title, expected):
@@ -55,11 +55,13 @@ def test_inventory_range_helpers_respect_title_and_columns():
 
 
 def test_inventory_range_helpers_normalise_wrapped_quotes():
-    assert sheets_sync.inventory_full_range("'Inventory'") == "'Inventory'!A1:AI"
-    assert sheets_sync.inventory_row_range('"Inventory"', 3) == "'Inventory'!A3:AI3"
+    assert sheets_sync.inventory_full_range("'Legacy'") == "'Legacy'!A1:AI"
+    assert sheets_sync.inventory_row_range('"Legacy"', 3) == "'Legacy'!A3:AI3"
 
 
 def test_sheets_client_range_uses_dynamic_last_column():
     columns = len(sheets_sync.HEADERS)
-    assert sheets_client._range_for_title("items", columns=columns) == "'items'!A:AI"
-    assert sheets_client._range_for_title("items", columns=80) == "'items'!A:CB"
+    assert sheets_client.a1_full_column_range("items", columns=columns) == "'items'!A1:AI"
+    assert sheets_client.a1_headers_range("items", columns=columns) == "'items'!A1:AI1"
+    assert sheets_client.a1_row_range("items", 5, columns=columns) == "'items'!A5:AI5"
+    assert sheets_client.a1_full_column_range("items", columns=80) == "'items'!A1:CB"

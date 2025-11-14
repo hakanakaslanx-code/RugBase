@@ -101,13 +101,42 @@ def _column_letter(index: int) -> str:
     return "".join(reversed(letters))
 
 
+def _column_count(columns: int) -> int:
+    """Clamp ``columns`` to the valid range for A1 helpers."""
+
+    return max(1, columns)
+
+
+def a1_headers_range(title: str, *, columns: int) -> str:
+    """Return an A1 range covering the header row for ``title``."""
+
+    column_count = _column_count(columns)
+    last_column = _column_letter(column_count)
+    return f"{_normalise_title(title)}!A1:{last_column}1"
+
+
+def a1_full_column_range(title: str, *, columns: int = 26) -> str:
+    """Return an A1 range spanning all rows for ``columns`` columns."""
+
+    column_count = _column_count(columns)
+    last_column = _column_letter(column_count)
+    return f"{_normalise_title(title)}!A1:{last_column}"
+
+
+def a1_row_range(title: str, row_index: int, *, columns: int) -> str:
+    """Return an A1 range covering ``row_index`` for ``title``."""
+
+    if row_index < 1:
+        raise ValueError("Row index must be >= 1")
+    column_count = _column_count(columns)
+    last_column = _column_letter(column_count)
+    return f"{_normalise_title(title)}!A{row_index}:{last_column}{row_index}"
+
+
 def _range_for_title(title: str, *, columns: int = 26) -> str:
     """Return an A1 range covering ``columns`` columns for ``title``."""
 
-    if columns < 1:
-        columns = 1
-    last_column = _column_letter(columns)
-    return f"{_normalise_title(title)}!A:{last_column}"
+    return a1_full_column_range(title, columns=columns)
 
 
 def _build_service(path: Path):
@@ -161,7 +190,7 @@ class GoogleSheetsClient:
         if not titles:
             return {}
 
-        ranges = [_range_for_title(title, columns=columns) for title in titles]
+        ranges = [a1_full_column_range(title, columns=columns) for title in titles]
         try:
             response = (
                 self._service.spreadsheets()
@@ -202,9 +231,11 @@ class GoogleSheetsClient:
         for tab in payload.values():
             all_rows: List[List[str]] = [list(tab.headers)]
             all_rows.extend([list(row) for row in tab.rows])
+            column_count = max([len(tab.headers)] + [len(row) for row in tab.rows]) if tab.rows else len(tab.headers)
+            column_count = column_count or 1
             data.append(
                 {
-                    "range": _range_for_title(tab.title, columns=len(tab.headers) or 1),
+                    "range": a1_full_column_range(tab.title, columns=column_count),
                     "values": all_rows,
                     "majorDimension": "ROWS",
                 }
@@ -241,5 +272,8 @@ __all__ = [
     "SheetsDependencyError",
     "build_client",
     "GOOGLE_API_AVAILABLE",
+    "a1_full_column_range",
+    "a1_headers_range",
+    "a1_row_range",
 ]
 
