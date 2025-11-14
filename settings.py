@@ -113,7 +113,7 @@ class GoogleSyncSettings:
     credential_path: str
     service_account_email: str = DEFAULT_SERVICE_ACCOUNT_EMAIL
     worksheet_title: str = DEFAULT_WORKSHEET_TITLE
-    inventory_tab: str = "Inventory"
+    inventory_tab: str = DEFAULT_WORKSHEET_TITLE
     customers_tab: str = "Customers"
     logs_tab: str = "Logs"
     settings_tab: str = "Settings"
@@ -133,7 +133,7 @@ class GoogleSyncSettings:
             "credential_path": self.credential_path,
             "service_account_email": self.service_account_email,
             "worksheet_title": self.worksheet_title,
-            "inventory_tab": self.inventory_tab,
+            "inventory_tab": self.worksheet_title,
             "customers_tab": self.customers_tab,
             "logs_tab": self.logs_tab,
             "settings_tab": self.settings_tab,
@@ -205,7 +205,7 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, object]:
         "credential_path": DEFAULT_CREDENTIALS_PATH,
         "service_account_email": DEFAULT_SERVICE_ACCOUNT_EMAIL,
         "worksheet_title": DEFAULT_WORKSHEET_TITLE,
-        "inventory_tab": "Inventory",
+        "inventory_tab": DEFAULT_WORKSHEET_TITLE,
         "customers_tab": "Customers",
         "logs_tab": "Logs",
         "settings_tab": "Settings",
@@ -243,6 +243,29 @@ def _ensure_sync_settings(path: str = SYNC_SETTINGS_PATH) -> Dict[str, object]:
     return merged
 
 
+def _extract_title(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _coerce_worksheet_title(data: Mapping[str, object]) -> str:
+    worksheet = _extract_title(data.get("worksheet_title"))
+    if worksheet:
+        return worksheet
+    legacy = _extract_title(data.get("inventory_tab"))
+    if legacy:
+        return legacy
+    return DEFAULT_WORKSHEET_TITLE
+
+
+def _coerce_inventory_title(data: Mapping[str, object], worksheet_title: str) -> str:
+    if worksheet_title:
+        return worksheet_title
+    legacy = _extract_title(data.get("inventory_tab"))
+    return legacy or DEFAULT_WORKSHEET_TITLE
+
+
 def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSettings:
     data = _ensure_sync_settings(path)
     mapping_entries: List[ColumnMapping] = []
@@ -254,12 +277,15 @@ def load_google_sync_settings(path: str = SYNC_SETTINGS_PATH) -> GoogleSyncSetti
         if isinstance(field, str) and isinstance(header, str):
             mapping_entries.append(ColumnMapping(field=field, header=header))
 
+    worksheet_title = _coerce_worksheet_title(data)
+    inventory_title = _coerce_inventory_title(data, worksheet_title)
+
     settings = GoogleSyncSettings(
         spreadsheet_id=str(data.get("spreadsheet_id", DEFAULT_SPREADSHEET_ID)),
         credential_path=str(data.get("credential_path", DEFAULT_CREDENTIALS_PATH)),
         service_account_email=str(data.get("service_account_email", DEFAULT_SERVICE_ACCOUNT_EMAIL)),
-        worksheet_title=str(data.get("worksheet_title", DEFAULT_WORKSHEET_TITLE)),
-        inventory_tab=str(data.get("inventory_tab", "Inventory")),
+        worksheet_title=worksheet_title,
+        inventory_tab=inventory_title,
         customers_tab=str(data.get("customers_tab", "Customers")),
         logs_tab=str(data.get("logs_tab", "Logs")),
         settings_tab=str(data.get("settings_tab", "Settings")),

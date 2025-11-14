@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 from core.google_credentials import ensure_service_account_file
+from settings import DEFAULT_WORKSHEET_TITLE
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ else:  # pragma: no cover - simple assignment
 
 
 SHEET_ID = "1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8"
-SHEET_NAME = "Inventory"
+SHEET_NAME = DEFAULT_WORKSHEET_TITLE
 REQUIRED_HEADERS: Tuple[str, ...] = (
     "RugNo",
     "Collection",

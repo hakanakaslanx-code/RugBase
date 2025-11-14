@@ -12,7 +12,7 @@ from settings import GoogleSyncSettings
 class StubClient:
     def __init__(self, inventory_headers):
         self.tabs = {
-            "Inventory": SheetTabData(title="Inventory", headers=inventory_headers, rows=[]),
+            "items": SheetTabData(title="items", headers=inventory_headers, rows=[]),
             "Customers": SheetTabData(title="Customers", headers=[], rows=[]),
             "Logs": SheetTabData(title="Logs", headers=[], rows=[]),
             "Settings": SheetTabData(title="Settings", headers=[], rows=[]),
@@ -33,7 +33,7 @@ def stubbed_datastore(tmp_path, monkeypatch):
         spreadsheet_id="TEST",
         credential_path=str(credentials),
         worksheet_title="items",
-        inventory_tab="Inventory",
+        inventory_tab="items",
         customers_tab="Customers",
         logs_tab="Logs",
         settings_tab="Settings",

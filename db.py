@@ -18,7 +18,7 @@ from core.sheets_client import (
     SheetsCredentialsError,
     build_client,
 )
-from settings import GoogleSyncSettings, load_google_sync_settings
+from settings import DEFAULT_WORKSHEET_TITLE, GoogleSyncSettings, load_google_sync_settings
 
 logger = logging.getLogger(__name__)
 
@@ -273,14 +273,16 @@ class SheetsDataStore:
             )
 
         client = build_client(settings.spreadsheet_id, credential_path)
+        inventory_title = self._inventory_title(settings)
+        settings.inventory_tab = inventory_title
         titles = [
-            settings.inventory_tab,
+            inventory_title,
             settings.customers_tab,
             settings.logs_tab,
             settings.settings_tab,
         ]
         snapshots = client.fetch_tabs(titles, columns=80)
-        missing_columns = self._load_inventory(settings, snapshots.get(settings.inventory_tab))
+        missing_columns = self._load_inventory(settings, snapshots.get(inventory_title))
         self._load_customers(settings, snapshots.get(settings.customers_tab))
         self._load_logs(snapshots.get(settings.logs_tab))
         self._load_settings(snapshots.get(settings.settings_tab))
@@ -305,6 +307,15 @@ class SheetsDataStore:
     # ------------------------------------------------------------------
     # Inventory helpers
     # ------------------------------------------------------------------
+    def _inventory_title(self, settings: GoogleSyncSettings) -> str:
+        title = (settings.worksheet_title or "").strip()
+        if title:
+            return title
+        legacy = (getattr(settings, "inventory_tab", "") or "").strip()
+        if legacy:
+            return legacy
+        return DEFAULT_WORKSHEET_TITLE
+
     def _load_inventory(self, settings: GoogleSyncSettings, tab: Optional[SheetTabData]) -> List[str]:
         headers = list(tab.headers if tab else [])
         if "ItemId" not in headers:
@@ -367,10 +378,12 @@ class SheetsDataStore:
         client = self._client
         if not settings or not client:
             raise RuntimeError("Sheets datastore not initialised")
+        inventory_title = self._inventory_title(settings)
+        settings.inventory_tab = inventory_title
         rows = [self._row_from_record(self._inventory[item_id].data) for item_id in self._inventory_order]
-        tab = SheetTabData(title=settings.inventory_tab, headers=self._inventory_headers, rows=rows)
+        tab = SheetTabData(title=inventory_title, headers=self._inventory_headers, rows=rows)
         try:
-            client.update_tabs({settings.inventory_tab: tab})
+            client.update_tabs({inventory_title: tab})
         except SheetsClientError as exc:
             with self._lock:
                 self._online = False
@@ -379,7 +392,7 @@ class SheetsDataStore:
         with self._lock:
             self._online = True
             self._last_error = None
-            self._snapshots[settings.inventory_tab] = SheetSnapshot(
+            self._snapshots[inventory_title] = SheetSnapshot(
                 headers=self._inventory_headers,
                 rows=rows,
                 digest=self._calc_digest(rows),
@@ -564,7 +577,9 @@ class SheetsDataStore:
         client = self._client
         if not settings or not client:
             raise RuntimeError("Sheets datastore not initialised")
-        titles = [settings.inventory_tab, settings.customers_tab]
+        inventory_title = self._inventory_title(settings)
+        settings.inventory_tab = inventory_title
+        titles = [inventory_title, settings.customers_tab]
         try:
             snapshots = client.fetch_tabs(titles, columns=80)
         except SheetsClientError as exc:
@@ -573,10 +588,10 @@ class SheetsDataStore:
                 self._last_error = str(exc)
             raise
         changed = False
-        inventory_tab = snapshots.get(settings.inventory_tab)
+        inventory_tab = snapshots.get(inventory_title)
         if inventory_tab:
             digest = self._calc_digest(inventory_tab.rows)
-            current = self._snapshots.get(settings.inventory_tab)
+            current = self._snapshots.get(inventory_title)
             if not current or digest != current.digest:
                 self._load_inventory(settings, inventory_tab)
                 changed = True
