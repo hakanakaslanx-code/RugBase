@@ -389,7 +389,7 @@ def get_client(credentials_path: str, payload: Optional[Mapping[str, object]] = 
         raise SpreadsheetAccessError(str(exc)) from exc
 
 
-def _quote_title(title: str) -> str:
+def quote_worksheet_title(title: Optional[str]) -> str:
     """Return a worksheet title safely formatted for A1 notation."""
 
     normalised = require_worksheet_title(title)
@@ -399,7 +399,7 @@ def _quote_title(title: str) -> str:
 
 
 def _a1_range(title: str, range_spec: str) -> str:
-    return f"{_quote_title(title)}!{range_spec}"
+    return f"{quote_worksheet_title(title)}!{range_spec}"
 
 
 def _http_status(exc: HttpError) -> int:
@@ -739,15 +739,34 @@ def _column_a1(column_index: int) -> str:
     return label
 
 
-FULL_COLUMN_RANGE = f"A1:{_column_a1(len(HEADERS) - 1)}"
+INVENTORY_LAST_COLUMN = _column_a1(len(HEADERS) - 1)
+FULL_COLUMN_RANGE = f"A1:{INVENTORY_LAST_COLUMN}"
 
 
 def _sheet_range(row_index: int) -> str:
     if row_index < 1:
         raise SheetsSyncError(f"Row index must be >= 1 for A1 ranges (received: {row_index})")
     start = _column_a1(0)
-    end = _column_a1(len(HEADERS) - 1)
+    end = INVENTORY_LAST_COLUMN
     return f"{start}{row_index}:{end}{row_index}"
+
+
+def inventory_full_range(worksheet_title: Optional[str]) -> str:
+    """Return an A1 range covering the complete inventory table."""
+
+    return _a1_range(worksheet_title, FULL_COLUMN_RANGE)
+
+
+def inventory_row_range(worksheet_title: Optional[str], row_index: int) -> str:
+    """Return an A1 range for a specific inventory row."""
+
+    return _a1_range(worksheet_title, _sheet_range(row_index))
+
+
+def inventory_column_range(worksheet_title: Optional[str]) -> str:
+    """Return an A1 range spanning all inventory columns."""
+
+    return f"{quote_worksheet_title(worksheet_title)}!A:{INVENTORY_LAST_COLUMN}"
 
 
 def _ensure_sheet_structure(
@@ -1067,7 +1086,7 @@ def _read_remote_rows(
     spreadsheet_id: str,
     worksheet_title: str,
 ) -> List[SheetRow]:
-    range_a1 = _a1_range(worksheet_title, FULL_COLUMN_RANGE)
+    range_a1 = inventory_full_range(worksheet_title)
     payload = _values_batch_get(service, spreadsheet_id, [range_a1])
     value_ranges = payload.get("valueRanges", [])
     rows: List[SheetRow] = []
@@ -1289,7 +1308,7 @@ def _flush_outbox(
                 hash=row.hash,
                 row_index=target_index,
             )
-        a1_range = _a1_range(worksheet_title, _sheet_range(target_index))
+        a1_range = inventory_row_range(worksheet_title, target_index)
         _values_batch_update(
             service,
             parsed_id,
@@ -1398,7 +1417,7 @@ def push(
         for batch in batches:
             data = []
             for row_index, row in batch:
-                a1_range = _a1_range(resolved_title, _sheet_range(row_index))
+                a1_range = inventory_row_range(resolved_title, row_index)
                 data.append({"range": a1_range, "values": [row.as_list()]})
             try:
                 _, retries = _values_batch_update(service, parsed_id, data)
@@ -1420,7 +1439,7 @@ def push(
                 row.row_index = next_row_index
                 data.append(
                     {
-                        "range": _a1_range(resolved_title, _sheet_range(next_row_index)),
+                        "range": inventory_row_range(resolved_title, next_row_index),
                         "values": [row.as_list()],
                     }
                 )
@@ -1683,6 +1702,10 @@ __all__ = [
     "detect_local_deltas",
     "get_client",
     "is_api_available",
+    "inventory_column_range",
+    "inventory_full_range",
+    "inventory_row_range",
+    "quote_worksheet_title",
     "require_worksheet_title",
     "push",
     "pull",
