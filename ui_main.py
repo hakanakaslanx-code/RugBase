@@ -640,7 +640,7 @@ class MainWindow:
             button_row,
             text="Configure Settings",
             command=self._open_sync_settings_window,
-        ).pack(side=tk.LEFT)
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
         ttk.Label(
             inner,
