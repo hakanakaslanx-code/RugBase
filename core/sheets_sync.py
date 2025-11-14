@@ -1764,6 +1764,93 @@ def ensure_sheet(service, spreadsheet_id: str, worksheet_title: str) -> int:
     return _ensure_sheet_structure(service, spreadsheet_id, resolved_title)
 
 
+def read_rows(
+    service,
+    spreadsheet_id: str,
+    worksheet_title: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Return raw sheet rows as dictionaries keyed by ``HEADERS``."""
+
+    parsed_id = parse_spreadsheet_id(spreadsheet_id)
+    if not parsed_id:
+        raise SpreadsheetAccessError("A valid Sheet ID is required.")
+
+    resolved_title = require_worksheet_title(worksheet_title)
+    remote_rows = _read_remote_rows(service, parsed_id, resolved_title)
+    return [dict(row.values) for row in remote_rows]
+
+
+def upsert_rows(
+    service,
+    spreadsheet_id: str,
+    rows: Sequence[Mapping[str, Any]],
+    worksheet_title: Optional[str] = None,
+) -> None:
+    """Insert or update the provided ``rows`` on the remote worksheet."""
+
+    if not rows:
+        return
+
+    parsed_id = parse_spreadsheet_id(spreadsheet_id)
+    if not parsed_id:
+        raise SpreadsheetAccessError("A valid Sheet ID is required.")
+
+    resolved_title = require_worksheet_title(worksheet_title)
+    remote_rows = _read_remote_rows(service, parsed_id, resolved_title)
+    remote_index: Dict[str, SheetRow] = {row.row_id: row for row in remote_rows}
+    next_row_index = max((row.row_index or 1 for row in remote_rows), default=1) + 1
+
+    pending_updates: List[Dict[str, Any]] = []
+
+    for raw_row in rows:
+        if isinstance(raw_row, SheetRow):
+            prepared = SheetRow(
+                row_id=raw_row.row_id,
+                values=dict(raw_row.values),
+                hash=raw_row.hash,
+                row_index=raw_row.row_index,
+            )
+        else:
+            if not isinstance(raw_row, Mapping):
+                raise SheetsSyncError("Rows must be mappings or SheetRow instances for upsert.")
+            values: Dict[str, str] = {header: "" for header in HEADERS}
+            for header in HEADERS:
+                value = raw_row.get(header)
+                values[header] = "" if value is None else str(value)
+            row_id = str(values.get("RowID") or "").strip()
+            if not row_id:
+                logger.debug("Skipping upsert row without RowID: %s", raw_row)
+                continue
+            values["RowID"] = row_id
+            if not values.get("Hash"):
+                values["Hash"] = calc_hash(values)
+            prepared = SheetRow(row_id=row_id, values=values, hash=values["Hash"])
+
+        target_index: Optional[int] = None
+        existing = remote_index.get(prepared.row_id)
+        if existing and existing.row_index is not None:
+            target_index = existing.row_index
+        if target_index is None:
+            target_index = next_row_index
+            next_row_index += 1
+        prepared.row_index = target_index
+        remote_index[prepared.row_id] = prepared
+
+        pending_updates.append(
+            {
+                "range": inventory_row_range(resolved_title, target_index),
+                "values": [prepared.as_list()],
+            }
+        )
+
+        if len(pending_updates) >= MAX_BATCH_ROWS:
+            _values_batch_update(service, parsed_id, pending_updates)
+            pending_updates.clear()
+
+    if pending_updates:
+        _values_batch_update(service, parsed_id, pending_updates)
+
+
 __all__ = [
     "HEADERS",
     "SheetRow",
@@ -1784,6 +1871,8 @@ __all__ = [
     "health_check",
     "open_logs",
     "resolve_conflict",
+    "read_rows",
+    "upsert_rows",
     "SheetsSyncError",
     "MissingDependencyError",
     "CredentialsFileNotFoundError",
