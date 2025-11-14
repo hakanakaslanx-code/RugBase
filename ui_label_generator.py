@@ -21,8 +21,8 @@ from label_renderer import (
 )
 
 MISSING_PILLOW_TEXT = (
-    "Pillow (PIL) gerekli. Aşağıdaki 'Pillow Kur' düğmesi ile kurulumu"
-    " tamamlayın ve ardından uygulamayı yeniden başlatın."
+    "Pillow (PIL) is required. Use the 'Install Pillow' button below to complete the"
+    " installation and then restart the application."
 )
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,7 @@ class LabelGeneratorWindow:
 
         self.install_pillow_button = ttk.Button(
             preview_frame,
-            text="Pillow Kur (Yeniden Başlat Gerekli)",
+            text="Install Pillow (Restart Required)",
             command=self._install_pillow,
         )
 
@@ -412,20 +412,20 @@ class LabelGeneratorWindow:
         if self.install_pillow_button["state"] == tk.DISABLED:
             return
         self.install_pillow_button.configure(state=tk.DISABLED)
-        self.warning_var.set("Pillow kurulumu başlatılıyor...")
+        self.warning_var.set("Starting Pillow installation…")
         self.window.update_idletasks()
         success, details = install_pillow()
         if details:
             logger.info("Pillow install output:\n%s", details)
         if success:
-            message = "Pillow kurulumu tamamlandı. Lütfen RugBase uygulamasını yeniden başlatın."
+            message = "Pillow installation completed. Please restart the RugBase application."
             self.warning_var.set(message)
-            messagebox.showinfo("Pillow Kurulumu", message)
+            messagebox.showinfo("Pillow Installation", message)
         else:
-            self.warning_var.set("Pillow kurulumu tamamlanamadı. Ayrıntılar için uyarıya bakın.")
+            self.warning_var.set("Pillow installation could not be completed. See the warning for details.")
             messagebox.showerror(
-                "Pillow Kurulumu",
-                "Kurulum tamamlanamadı. Ayrıntılar:\n\n" + (details or "Bilinmeyen hata."),
+                "Pillow Installation",
+                "Installation failed. Details:\n\n" + (details or "Unknown error."),
             )
             self.install_pillow_button.configure(state=tk.NORMAL)
 

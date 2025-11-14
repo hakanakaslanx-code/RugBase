@@ -77,7 +77,7 @@ class SheetsApiResponseError(SheetsClientError):
 def _require_google_api() -> None:
     if not GOOGLE_API_AVAILABLE:
         raise SheetsDependencyError(
-            "google-api-python-client bulunamadı. Google Sheets senkronizasyonu devre dışı."
+            "google-api-python-client was not found. Google Sheets sync is disabled."
         )
 
 

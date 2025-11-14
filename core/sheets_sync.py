@@ -125,7 +125,7 @@ DEFAULT_WORKSHEET_TITLE = "items"
 META_SHEET_TITLE = "meta"
 LOG_SHEET_TITLE = "sync_logs"
 SCOPES: Iterable[str] = ("https://www.googleapis.com/auth/spreadsheets",)
-OFFLINE_QUEUE_MESSAGE = "Offline, değişiklik saklandı → çevrim içi olunca gönderilecek"
+OFFLINE_QUEUE_MESSAGE = "Offline, change saved → will send when back online"
 
 STATUS_ALLOWED_VALUES: Tuple[str, ...] = ("active", "archived", "sold", "reserved")
 MAX_BATCH_ROWS = 500
@@ -316,22 +316,22 @@ def _format_credentials_error(exc: Exception) -> str:
         malformed = getattr(google_auth_exceptions, "MalformedError", tuple())
         default_error = getattr(google_auth_exceptions, "DefaultCredentialsError", tuple())
         if isinstance(exc, malformed):
-            return message or "Service account JSON bozuk."
+            return message or "Service account JSON is malformed."
         if isinstance(exc, default_error):
-            return message or "Service account JSON doğrulanamadı."
+            return message or "Service account JSON could not be validated."
 
     if "invalid jwt signature" in lower:
-        return "Private key imzası doğrulanamadı. Lütfen credentials.json dosyasını tekrar indirin."
+        return "Private key signature could not be verified. Please download credentials.json again."
     if "missing" in lower and "field" in lower:
         fields = ", ".join(REQUIRED_FIELDS)
-        return f"JSON eksik alanlar: {fields}"
+        return f"JSON missing fields: {fields}"
     if "expected format" in lower:
         fields = ", ".join(REQUIRED_FIELDS)
-        return f"JSON eksik alanlar: {fields}"
+        return f"JSON missing fields: {fields}"
     if "could not deserialize key data" in lower or "private key" in lower:
-        return "Private key değeri çözümlenemedi. JSON içindeki 'private_key' alanını kontrol edin."
+        return "Private key value could not be parsed. Check the 'private_key' field in the JSON."
 
-    return message or "Geçersiz service account JSON dosyası."
+    return message or "Invalid service account JSON file."
 
 
 def _utcnow_iso() -> str:
@@ -351,7 +351,7 @@ def require_worksheet_title(title: Optional[str]) -> str:
 
     if not normalised:
         raise SpreadsheetAccessError(
-            "Worksheet adı Sync Settings'de belirtilmeli."
+            "Worksheet name must be provided in Sync Settings."
         )
     return normalised
 
@@ -501,7 +501,7 @@ def _perform_write_check(
         status = _http_status(exc)
         if status == 403:
             raise SheetsPermissionError(
-                f"Service account edit yetkisi yok (mail: {account_email})."
+                f"Service account lacks edit permission (email: {account_email})."
             ) from exc
         raise SpreadsheetAccessError(f"Sheets write failed: {exc}") from exc
     finally:
@@ -1627,7 +1627,7 @@ def health_check(
         status = _http_status(exc)
         if status == 403:
             raise SheetsPermissionError(
-                f"Service account edit yetkisi yok (mail: {account_email})."
+                f"Service account lacks edit permission (email: {account_email})."
             ) from exc
         raise SpreadsheetAccessError(f"Sheets read failed: {exc}") from exc
 

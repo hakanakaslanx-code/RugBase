@@ -95,12 +95,12 @@ class MainWindow:
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", self._on_search_change)
         self.show_sold_var = tk.BooleanVar(value=False)
-        self.sync_state_var = tk.StringVar(value="Bağlantı kontrol ediliyor…")
+        self.sync_state_var = tk.StringVar(value="Checking connection…")
         self.user_status_var = tk.StringVar()
         self.last_sync_var = tk.StringVar(value="—")
-        self.sync_status_badge_var = tk.StringVar(value="Bağlantı kontrol ediliyor…")
-        self.sync_detail_var = tk.StringVar(value="Google Sheets bağlantısı doğrulanıyor…")
-        self.sync_pending_var = tk.StringVar(value="Bekleyen değişiklik: 0")
+        self.sync_status_badge_var = tk.StringVar(value="Checking connection…")
+        self.sync_detail_var = tk.StringVar(value="Verifying Google Sheets connection…")
+        self.sync_pending_var = tk.StringVar(value="Pending changes: 0")
         self.summary_var = tk.StringVar(
             value="Total Items: 0 | Total Area: 0.00 sq ft | Last Sync: —"
         )
@@ -189,13 +189,13 @@ class MainWindow:
     def _apply_sync_status(self, status: InventoryStatus) -> None:
         online = status.online
         if online:
-            badge_text = "ONLINE – senkronize ediliyor" if status.pending else "ONLINE – synced"
+            badge_text = "ONLINE – syncing" if status.pending else "ONLINE – synced"
             detail = (
-                f"Son senkron: {status.last_sync}" if status.last_sync else "Son senkron: —"
+                f"Last sync: {status.last_sync}" if status.last_sync else "Last sync: —"
             )
         else:
             badge_text = "OFFLINE – read-only"
-            detail = status.error or "Bağlantı bulunamadı. Değişiklikler kuyruğa alınacak."
+            detail = status.error or "Connection unavailable. Changes will be queued."
 
         if status.message:
             detail = status.message
@@ -208,9 +208,9 @@ class MainWindow:
         else:
             self.sync_detail_var.set(detail)
         pending_text = (
-            f"Bekleyen değişiklik: {status.pending}"
+            f"Pending changes: {status.pending}"
             if status.pending
-            else "Bekleyen değişiklik: 0"
+            else "Pending changes: 0"
         )
         self.sync_pending_var.set(pending_text)
         self.last_sync_var.set(status.last_sync or "—")
@@ -222,7 +222,7 @@ class MainWindow:
                 self._show_conflict_message(rug_no)
 
     def _show_conflict_message(self, rug_no: str) -> None:
-        message = f"{rug_no} satırı uzaktan güncellendi"
+        message = f"Row {rug_no} was updated remotely"
         self.sync_detail_var.set(message)
         if self._conflict_toast_job:
             self.root.after_cancel(self._conflict_toast_job)
@@ -234,7 +234,7 @@ class MainWindow:
 
     def on_sync_now(self) -> None:
         self.sync_manager.sync_now()
-        self._sync_detail_default = "Senkronizasyon başlatıldı…"
+        self._sync_detail_default = "Synchronization started…"
         self.sync_detail_var.set(self._sync_detail_default)
 
     def on_open_sheet(self) -> None:
@@ -243,7 +243,7 @@ class MainWindow:
         if not sheet_id:
             messagebox.showinfo(
                 "Google Sheets",
-                "Sheet ID ayarlardan girilmemiş.",
+                "Sheet ID is not configured in settings.",
                 parent=self.root,
             )
             return
@@ -251,7 +251,9 @@ class MainWindow:
         try:
             webbrowser.open(url)
         except Exception as exc:
-            messagebox.showerror("Google Sheets", f"Sayfa açılamadı: {exc}", parent=self.root)
+            messagebox.showerror(
+                "Google Sheets", f"Could not open spreadsheet: {exc}", parent=self.root
+            )
 
     def _configure_style(self) -> None:
         default_font = tkfont.nametofont("TkDefaultFont")
@@ -478,7 +480,7 @@ class MainWindow:
     @staticmethod
     def _format_column_check_message(columns: Sequence[str]) -> str:
         formatted = ", ".join(sorted(columns))
-        return f"Yeni sütunlar eklendi: {formatted}"
+        return f"New columns added: {formatted}"
 
     def _create_widgets(self) -> None:
         self._build_menu()
@@ -608,34 +610,34 @@ class MainWindow:
         inner = ttk.Frame(self.connection_overlay, padding=48, style="Card.TFrame")
         inner.pack(expand=True, padx=40, pady=40)
 
-        ttk.Label(inner, text="Google Sheets bağlantısı gerekli", style="Hero.TLabel").pack(
+        ttk.Label(inner, text="Google Sheets connection required", style="Hero.TLabel").pack(
             anchor="center", pady=(0, 12)
         )
         ttk.Label(
             inner,
             text=(
-                "RugBase artık tüm verileri Google Sheets üzerinden yönetiyor."
-                " Devam etmek için geçerli bir service account JSON dosyası yükleyin."
+                "RugBase now manages all data through Google Sheets."
+                " Upload a valid service account JSON file to continue."
             ),
             wraplength=480,
             justify=tk.CENTER,
         ).pack(anchor="center", pady=(0, 16))
 
-        self.connection_status_var = tk.StringVar(value="Bağlantı bekleniyor")
+        self.connection_status_var = tk.StringVar(value="Waiting for connection")
         ttk.Label(inner, textvariable=self.connection_status_var, style="Warning.TLabel").pack(
             anchor="center", pady=(0, 16)
         )
 
         button_row = ttk.Frame(inner)
         button_row.pack(anchor="center")
-        ttk.Button(button_row, text="JSON yükle", command=self._on_upload_credentials).pack(
+        ttk.Button(button_row, text="Upload JSON", command=self._on_upload_credentials).pack(
             side=tk.LEFT, padx=(0, 8)
         )
-        ttk.Button(button_row, text="Tekrar dene", command=self.on_sync_now).pack(side=tk.LEFT)
+        ttk.Button(button_row, text="Try Again", command=self.on_sync_now).pack(side=tk.LEFT)
 
         ttk.Label(
             inner,
-            text=f"Hedef: {DEFAULT_CREDENTIALS_PATH}",
+            text=f"Target: {DEFAULT_CREDENTIALS_PATH}",
             style="Hint.TLabel",
         ).pack(anchor="center", pady=(16, 0))
 
@@ -653,7 +655,7 @@ class MainWindow:
         if error:
             self.connection_status_var.set(error)
         else:
-            self.connection_status_var.set("credentials.json yüklenmeli.")
+            self.connection_status_var.set("credentials.json must be uploaded.")
         self.connection_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.connection_overlay.lift()
         self._apply_offline_state(True)
@@ -678,8 +680,8 @@ class MainWindow:
 
     def _on_upload_credentials(self) -> None:
         path = filedialog.askopenfilename(
-            title="Service account JSON seç",
-            filetypes=(("JSON", "*.json"), ("Tüm dosyalar", "*.*")),
+            title="Select service account JSON",
+            filetypes=(("JSON", "*.json"), ("All files", "*.*")),
         )
         if not path:
             return
@@ -687,7 +689,7 @@ class MainWindow:
         try:
             ensure_service_account_file(source)
         except CredentialsFileInvalidError as exc:
-            messagebox.showerror("Geçersiz JSON", str(exc))
+            messagebox.showerror("Invalid JSON", str(exc))
             return
 
         target = Path(DEFAULT_CREDENTIALS_PATH)
@@ -696,7 +698,7 @@ class MainWindow:
             shutil.copy2(source, target)
             ensure_service_account_file(target)
         except (OSError, CredentialsFileInvalidError) as exc:
-            messagebox.showerror("Dosya hatası", str(exc))
+            messagebox.showerror("File error", str(exc))
             return
 
         settings = load_google_sync_settings()
@@ -708,7 +710,7 @@ class MainWindow:
         except SheetsClientError as exc:
             self._initial_error = str(exc)
             self._update_connection_view()
-            messagebox.showerror("Bağlantı hatası", str(exc))
+            messagebox.showerror("Connection error", str(exc))
             return
 
         self._initial_error = None
@@ -716,7 +718,7 @@ class MainWindow:
         self.load_items()
         self.load_customers()
         self._update_connection_view()
-        messagebox.showinfo("Başarılı", "Google Sheets bağlantısı güncellendi.")
+        messagebox.showinfo("Success", "Google Sheets connection updated.")
 
     def _draw_vertical_gradient(
         self, canvas: tk.Canvas, width: int, height: int, start_color: str, end_color: str
@@ -1220,13 +1222,13 @@ class MainWindow:
     def open_consignment_modal(self) -> None:
         messagebox.showinfo(
             "Consignment",
-            "Consignment işlemleri Google Sheets senkronizasyonuna taşınmadı.",
+            "Consignment workflows have not been migrated to Google Sheets synchronization.",
         )
 
     def open_return_modal(self) -> None:
         messagebox.showinfo(
             "Consignment",
-            "Consignment işlemleri Google Sheets senkronizasyonuna taşınmadı.",
+            "Consignment workflows have not been migrated to Google Sheets synchronization.",
         )
 
     def on_check_columns(self) -> None:
@@ -1236,16 +1238,16 @@ class MainWindow:
             logger.exception("Column check failed")
             messagebox.showerror(
                 "Column Check Failed",
-                f"Kolon kontrolü başarısız: {exc}",
+                f"Column check failed: {exc}",
             )
-            self.column_status_var.set("Kolon kontrolü başarısız.")
+            self.column_status_var.set("Column check failed.")
             return
 
         if added_columns:
             message = self._format_column_check_message(added_columns)
             messagebox.showinfo("Inventory Columns", message)
         else:
-            message = "Tüm gerekli sütunlar mevcut."
+            message = "All required columns are present."
             messagebox.showinfo("Inventory Columns", message)
         self.column_status_var.set(message)
         self.log_activity("Column audit complete")
@@ -1253,7 +1255,7 @@ class MainWindow:
     def open_consignment_list(self) -> None:
         messagebox.showinfo(
             "Consignment",
-            "Consignment işlemleri Google Sheets senkronizasyonuna taşınmadı.",
+            "Consignment workflows have not been migrated to Google Sheets synchronization.",
         )
 
     def get_selected_item_id(self) -> Optional[str]:
@@ -1409,12 +1411,12 @@ class MainWindow:
         ).pack(anchor=tk.W, pady=(2, 12))
         ttk.Button(
             container,
-            text="Google Sheets'i Aç",
+            text="Open Google Sheets",
             command=self.on_open_sheet,
         ).pack(anchor=tk.W, pady=(0, 12))
         ttk.Button(
             container,
-            text="credentials.json yükle",
+            text="Upload credentials.json",
             command=self._on_upload_credentials,
         ).pack(anchor=tk.W)
 
