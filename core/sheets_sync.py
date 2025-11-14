@@ -32,7 +32,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import sqlite3
 import threading
 import time
@@ -126,7 +125,6 @@ DEFAULT_WORKSHEET_TITLE = "items"
 META_SHEET_TITLE = "meta"
 LOG_SHEET_TITLE = "sync_logs"
 SCOPES: Iterable[str] = ("https://www.googleapis.com/auth/spreadsheets",)
-FULL_COLUMN_RANGE = "A:ZZ"
 OFFLINE_QUEUE_MESSAGE = "Offline, değişiklik saklandı → çevrim içi olunca gönderilecek"
 
 STATUS_ALLOWED_VALUES: Tuple[str, ...] = ("active", "archived", "sold", "reserved")
@@ -347,6 +345,10 @@ def _utcnow_iso() -> str:
 
 def require_worksheet_title(title: Optional[str]) -> str:
     normalised = (title or "").strip()
+
+    if len(normalised) >= 2 and normalised[0] == normalised[-1] and normalised[0] in {"'", '"'}:
+        normalised = normalised[1:-1].strip()
+
     if not normalised:
         raise SpreadsheetAccessError(
             "Worksheet adı Sync Settings'de belirtilmeli."
@@ -387,16 +389,10 @@ def get_client(credentials_path: str, payload: Optional[Mapping[str, object]] = 
         raise SpreadsheetAccessError(str(exc)) from exc
 
 
-_SIMPLE_TITLE_RE = re.compile(r"^[A-Za-z0-9_]+$")
-
-
 def _quote_title(title: str) -> str:
     """Return a worksheet title safely formatted for A1 notation."""
 
     normalised = require_worksheet_title(title)
-
-    if _SIMPLE_TITLE_RE.fullmatch(normalised):
-        return normalised
 
     escaped = normalised.replace("'", "''")
     return f"'{escaped}'"
@@ -743,7 +739,12 @@ def _column_a1(column_index: int) -> str:
     return label
 
 
+FULL_COLUMN_RANGE = f"A1:{_column_a1(len(HEADERS) - 1)}"
+
+
 def _sheet_range(row_index: int) -> str:
+    if row_index < 1:
+        raise SheetsSyncError(f"Row index must be >= 1 for A1 ranges (received: {row_index})")
     start = _column_a1(0)
     end = _column_a1(len(HEADERS) - 1)
     return f"{start}{row_index}:{end}{row_index}"
