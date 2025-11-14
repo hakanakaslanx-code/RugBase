@@ -160,8 +160,7 @@ class SyncService:
         worksheet_title = sheets_sync.require_worksheet_title(settings.worksheet_title)
         sheets_sync.ensure_sheet(client, settings.spreadsheet_id, worksheet_title)
 
-        escaped_title = worksheet_title.replace("'", "''")
-        range_spec = f"'{escaped_title}'!{sheets_sync.FULL_COLUMN_RANGE}"
+        range_spec = sheets_sync.inventory_full_range(worksheet_title)
         try:
             result = (
                 client.spreadsheets()

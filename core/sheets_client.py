@@ -104,8 +104,10 @@ def _column_letter(index: int) -> str:
 def _range_for_title(title: str, *, columns: int = 26) -> str:
     """Return an A1 range covering ``columns`` columns for ``title``."""
 
-    _ = columns  # retained for backwards compatibility of the signature
-    return f"{_normalise_title(title)}!A:ZZ"
+    if columns < 1:
+        columns = 1
+    last_column = _column_letter(columns)
+    return f"{_normalise_title(title)}!A:{last_column}"
 
 
 def _build_service(path: Path):
