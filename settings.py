@@ -15,11 +15,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SETTINGS_PATH = str(app_paths.data_path("settings.json"))
 
-DEFAULT_SPREADSHEET_ID = str(app_paths.data_path("rugbase_inventory.xlsx"))
-DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
+DEFAULT_SPREADSHEET_ID = os.getenv(
+    "RUGBASE_SPREADSHEET_ID",
+    str(app_paths.data_path("rugbase_inventory.xlsx")),
+)
+DEFAULT_SERVICE_ACCOUNT_EMAIL = os.getenv("RUGBASE_SERVICE_ACCOUNT_EMAIL", "")
 DEFAULT_WORKSHEET_TITLE = "items"
 SYNC_SETTINGS_PATH = str(app_paths.data_path("sync_settings.json"))
-DEFAULT_CREDENTIALS_PATH = str((app_paths.APP_DIR / "credentials.json").resolve())
+DEFAULT_CREDENTIALS_PATH = os.getenv(
+    "RUGBASE_CREDENTIALS_PATH",
+    str(app_paths.credentials_path("service_account.json")),
+)
 
 DEFAULT_CONFIG = {
     "dymo_label": {

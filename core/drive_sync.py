@@ -102,17 +102,47 @@ SECURITY_NOTE = (
 
 logger.warning("[Drive] %s", SECURITY_NOTE)
 
+SETTINGS_FILENAME = "drive_sync_settings.json"
 DB_FILENAME = "rugbase.db"
-ROOT_FOLDER_ID = "1rM1Ev9BdY_hhNOTdJgaRwziomVmNrLfq"
 CHANGELOG_FOLDER_NAME = "RugBase_Changelog"
 BACKUPS_FOLDER_NAME = "RugBase_Backups"
-SETTINGS_FILENAME = "drive_sync_settings.json"
 DEFAULT_POLL_INTERVAL = 30
 TOKEN_FILENAME = "token.json"
 CREDENTIALS_FILENAME = "service_account.json"
-DEFAULT_SERVICE_ACCOUNT_EMAIL = "rugbase-sync@rugbase-sync.iam.gserviceaccount.com"
-DEFAULT_SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1n6_7L-8fPtQBN_QodxBXj3ZMzOPpMzdx8tpdRZZe5F8/edit#gid=0"
-DEFAULT_PRIVATE_KEY_ID = "f81ab6e728a812fab039e53b66d70241766d757e"
+
+
+def _drive_settings_path() -> Path:
+    return app_paths.config_path(SETTINGS_FILENAME)
+
+
+def _load_drive_config() -> Dict[str, str]:
+    path = _drive_settings_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("[Drive] Settings file %s could not be read: %s", path, exc)
+        return {}
+    if isinstance(payload, dict):
+        return {str(key): str(value) for key, value in payload.items()}
+    return {}
+
+
+def _drive_setting(key: str, env_var: str, default: str = "") -> str:
+    value = os.getenv(env_var)
+    if value:
+        return value
+    return _DRIVE_CONFIG.get(key, default)
+
+
+_DRIVE_CONFIG: Dict[str, str] = _load_drive_config()
+
+ROOT_FOLDER_ID = _drive_setting("root_folder_id", "RUGBASE_ROOT_FOLDER_ID")
+DEFAULT_SERVICE_ACCOUNT_EMAIL = _drive_setting("service_account_email", "RUGBASE_SERVICE_ACCOUNT_EMAIL")
+DEFAULT_SPREADSHEET_URL = _drive_setting("spreadsheet_url", "RUGBASE_SPREADSHEET_URL")
+DEFAULT_PRIVATE_KEY_ID = _drive_setting("private_key_id", "RUGBASE_PRIVATE_KEY_ID")
 STATUS_CONNECTED = "connected"
 STATUS_OFFLINE = "offline"
 STATUS_REAUTHORISE = "reauthorize"

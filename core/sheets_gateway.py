@@ -25,12 +25,12 @@ Google client so that it can be unit tested without hitting the real API.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import getpass
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
+from core import app_paths
 from core.google_credentials import ensure_service_account_file
 from core.sheets_client import is_excel_target
 from core.excel_service import ExcelService
@@ -121,14 +121,13 @@ def is_api_available() -> bool:
 
 
 def _default_credentials_path() -> Path:
-    username = os.environ.get("USERNAME") or os.environ.get("USER")
-    if not username:
-        try:
-            username = getpass.getuser()
-        except Exception:  # pragma: no cover - platform dependent fallback
-            username = ""
-    path = Path(f"C:/Users/{username}/AppData/Local/RugBase/credentials/service_account.json")
-    return path
+    explicit = os.environ.get("RUGBASE_CREDENTIALS_PATH")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+
+    # Fall back to the managed application directory so credentials live
+    # alongside the rest of the RugBase state regardless of platform.
+    return app_paths.credentials_path("service_account.json")
 
 
 def _load_credentials(path: Optional[Path] = None):

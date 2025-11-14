@@ -1,60 +1,21 @@
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Dict
 
 import pytest
 
 import db
-from core.sheets_client import SheetTabData
-from settings import GoogleSyncSettings
 
 
-class FakeSheetsClient:
-    def __init__(self, tabs: Dict[str, SheetTabData]):
-        self.tabs = tabs
-        self.updated_payload = None
-
-    def fetch_tabs(self, titles, *, columns=80):
-        return {title: self.tabs.get(title, SheetTabData(title, [], [])) for title in titles}
-
-    def update_tabs(self, payload):
-        self.updated_payload = payload
-
-
-@pytest.fixture
-def google_settings(tmp_path, monkeypatch):
-    credentials = tmp_path / "credentials.json"
-    credentials.write_text("{}", encoding="utf-8")
-    settings = GoogleSyncSettings(
-        spreadsheet_id="TEST",
-        credential_path=str(credentials),
-        worksheet_title="items",
-        inventory_tab="items",
-        customers_tab="Customers",
-        logs_tab="Logs",
-        settings_tab="Settings",
-    )
-    monkeypatch.setattr(db, "load_google_sync_settings", lambda: settings)
-    return settings
-
-
-@pytest.fixture
-def fake_client(monkeypatch, google_settings):
-    tabs = {
-        "items": SheetTabData(title="items", headers=["ItemId", "RugNo", "Retail"], rows=[]),
-        "Customers": SheetTabData(title="Customers", headers=[], rows=[]),
-        "Logs": SheetTabData(title="Logs", headers=[], rows=[]),
-        "Settings": SheetTabData(title="Settings", headers=[], rows=[]),
-    }
-    client = FakeSheetsClient(tabs)
-    monkeypatch.setattr(db, "build_client", lambda spreadsheet_id, credential_path: client)
-    monkeypatch.setattr(db, "_DATASTORE", db.SheetsDataStore())
-    return client
-
-
-def test_upsert_notifies_registered_listeners(fake_client, google_settings):
+def _configure_db(tmp_path: Path) -> Path:
+    db_path = tmp_path / "notifications.db"
+    if db_path.exists():
+        db_path.unlink()
+    db.set_database_path(db_path)
     db.initialize_database()
+    return db_path
+
+
+def test_upsert_notifies_registered_listeners(tmp_path):
+    _configure_db(tmp_path)
 
     received: list[str] = []
 
@@ -66,28 +27,19 @@ def test_upsert_notifies_registered_listeners(fake_client, google_settings):
         item_id, created = db.upsert_item({"rug_no": "RUG-XYZ", "retail": "$2.500,00"})
         assert created is True
         assert received == [item_id]
-        assert fake_client.updated_payload is not None
 
         received.clear()
         updated_id, created = db.upsert_item({"item_id": item_id, "design": "Updated"})
         assert created is False
         assert updated_id == item_id
         assert received == [item_id]
+
+        item = db.fetch_item(item_id)
+        assert item is not None
+        assert pytest.approx(item.get("retail"), rel=1e-5) == 2500.0
+        assert item.get("design") == "Updated"
     finally:
         db.remove_item_upsert_listener(listener)
-
-
-def test_initialize_database_parses_numeric(fake_client, google_settings):
-    inventory = SheetTabData(
-        title="items",
-        headers=["ItemId", "RugNo", "Retail", "UpdatedAt"],
-        rows=[["ITEM-1", "RUG-100", "$1.234,56", "2023-01-01T10:00:00Z"]],
-    )
-    fake_client.tabs["items"] = inventory
-
-    db.initialize_database()
-    items = db.fetch_items()
-    assert items[0]["retail"] == pytest.approx(1234.56)
 
 
 def test_parse_numeric_handles_currency():
