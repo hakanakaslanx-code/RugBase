@@ -58,7 +58,13 @@ DEFAULT_CONFIG = {
             "field_value": {"name": "arial.ttf", "size_pt": 8},
             "price": {"name": "arial.ttf", "size_pt": 11},
         },
-    }
+    },
+    "drive_sync": {
+        "root_folder_id": "",
+        "service_account_email": "",
+        "spreadsheet_url": "",
+        "private_key_id": "",
+    },
 }
 
 

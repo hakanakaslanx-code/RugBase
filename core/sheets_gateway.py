@@ -145,12 +145,26 @@ def _load_credentials(path: Optional[Path] = None):
     return service_account.Credentials.from_service_account_info(payload, scopes=scopes)
 
 
+def _resolve_excel_path(spreadsheet_id: str) -> Path:
+    """Return a platform-independent path for Excel-backed sync targets."""
+
+    candidate = Path(spreadsheet_id).expanduser()
+    if candidate.is_absolute():
+        return candidate
+
+    cwd_candidate = (Path.cwd() / candidate).resolve()
+    if cwd_candidate.exists():
+        return cwd_candidate
+
+    # Fall back to the managed application data directory so the path works on
+    # Windows, macOS, and Linux without hard-coded user directories.
+    managed = app_paths.data_path(str(candidate))
+    return managed.resolve()
+
+
 def _build_service(credentials=None, *, spreadsheet_id: Optional[str] = None):
     if spreadsheet_id and is_excel_target(spreadsheet_id):
-        path = Path(spreadsheet_id).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        return ExcelService(path)
+        return ExcelService(_resolve_excel_path(spreadsheet_id))
     if not GOOGLE_API_AVAILABLE:
         raise MissingDependencyError(
             "google-api-python-client was not found. Google Sheets sync is disabled."

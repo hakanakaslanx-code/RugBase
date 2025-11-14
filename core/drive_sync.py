@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple, NoReturn
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple, NoReturn
 import tempfile
 from stat import S_IRUSR, S_IWUSR
 import site
@@ -20,6 +20,7 @@ import sys
 import db
 from core import app_paths, deps_bootstrap, drive_api
 from core.hash import file_sha256
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ SECURITY_NOTE = (
 logger.warning("[Drive] %s", SECURITY_NOTE)
 
 SETTINGS_FILENAME = "drive_sync_settings.json"
+MAIN_SETTINGS_SECTION = "drive_sync"
 DB_FILENAME = "rugbase.db"
 CHANGELOG_FOLDER_NAME = "RugBase_Changelog"
 BACKUPS_FOLDER_NAME = "RugBase_Backups"
@@ -115,19 +117,45 @@ def _drive_settings_path() -> Path:
     return app_paths.config_path(SETTINGS_FILENAME)
 
 
-def _load_drive_config() -> Dict[str, str]:
-    path = _drive_settings_path()
+def _load_json_mapping(path: Path, *, warn: bool) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
         with path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("[Drive] Settings file %s could not be read: %s", path, exc)
+        log = logger.warning if warn else logger.debug
+        log("[Drive] Settings file %s could not be read: %s", path, exc, exc_info=not warn)
         return {}
-    if isinstance(payload, dict):
-        return {str(key): str(value) for key, value in payload.items()}
+    if isinstance(payload, Mapping):
+        return dict(payload)
     return {}
+
+
+def _load_main_drive_config() -> Dict[str, str]:
+    settings_path = Path(settings.DEFAULT_SETTINGS_PATH)
+    payload = _load_json_mapping(settings_path, warn=False)
+    section = payload.get(MAIN_SETTINGS_SECTION, {}) if isinstance(payload, Mapping) else {}
+    if not isinstance(section, Mapping):
+        return {}
+    config: Dict[str, str] = {}
+    for key, value in section.items():
+        if value in (None, ""):
+            continue
+        config[str(key)] = str(value)
+    return config
+
+
+def _load_legacy_drive_config() -> Dict[str, str]:
+    payload = _load_json_mapping(_drive_settings_path(), warn=True)
+    return {str(key): str(value) for key, value in payload.items() if value not in (None, "")}
+
+
+def _load_drive_config() -> Dict[str, str]:
+    config: Dict[str, str] = {}
+    config.update(_load_main_drive_config())
+    config.update(_load_legacy_drive_config())
+    return config
 
 
 def _drive_setting(key: str, env_var: str, default: str = "") -> str:
