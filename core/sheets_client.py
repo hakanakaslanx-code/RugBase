@@ -121,7 +121,7 @@ def a1_full_column_range(title: str, *, columns: int = 26) -> str:
 
     column_count = _column_count(columns)
     last_column = _column_letter(column_count)
-    return f"{_normalise_title(title)}!A1:{last_column}"
+    return f"{_normalise_title(title)}!A:{last_column}"
 
 
 def a1_row_range(title: str, row_index: int, *, columns: int) -> str:

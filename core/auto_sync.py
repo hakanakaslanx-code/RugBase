@@ -97,7 +97,9 @@ class AutoSyncController:
             self._notify_status("disabled", {"reason": "settings"})
             return
 
-        if not Path(settings.credential_path).exists():
+        try:
+            sheets_sync.resolve_credentials_path(settings.credential_path)
+        except sheets_sync.CredentialsFileNotFoundError:
             self._notify_status("disabled", {"reason": "credentials"})
             return
 

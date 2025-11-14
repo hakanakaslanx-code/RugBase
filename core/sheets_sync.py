@@ -342,13 +342,69 @@ def require_worksheet_title(title: Optional[str]) -> str:
     return normalised
 
 
+def _credential_candidate_paths(raw_path: str) -> List[Path]:
+    """Return possible locations for a credential file, including legacy paths."""
+
+    raw_value = (raw_path or "").strip()
+    primary = Path(raw_value) if raw_value else Path("service_account.json")
+
+    candidates: List[Path] = []
+    seen: set[str] = set()
+
+    def _normalise(candidate: Path) -> Path:
+        expanded = candidate.expanduser()
+        if os.name != "nt" and ":" in str(expanded):
+            return expanded
+        try:
+            return expanded.resolve()
+        except Exception:
+            return expanded
+
+    def _add(candidate: Path) -> None:
+        normalised = _normalise(candidate)
+        key = str(normalised)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(normalised)
+
+    _add(primary)
+    if not primary.is_absolute():
+        _add(Path.cwd() / primary)
+
+    file_names = {primary.name or "", "service_account.json", "credentials.json"}
+    file_names.discard("")
+
+    for name in file_names:
+        _add(app_paths.credentials_path(name))
+        _add(app_paths.APP_DIR / name)
+
+    return candidates
+
+
+def resolve_credentials_path(raw_path: str) -> Path:
+    """Resolve ``raw_path`` to an existing credentials file, raising on failure."""
+
+    candidates = _credential_candidate_paths(raw_path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    primary = candidates[0] if candidates else Path(raw_path)
+    hints = [str(path) for path in candidates[1:4] if path != primary]
+    if hints:
+        hint_text = "; ".join(hints)
+        raise CredentialsFileNotFoundError(
+            f"Credentials file not found: {primary} (also checked: {hint_text})"
+        )
+    raise CredentialsFileNotFoundError(f"Credentials file not found: {primary}")
+
+
 def get_client(credentials_path: str, payload: Optional[Mapping[str, object]] = None):
     """Return an authenticated Sheets API client using the service account."""
 
     _require_api()
-    path = Path(os.path.expanduser(credentials_path)).resolve()
-    if not path.exists():
-        raise CredentialsFileNotFoundError(f"Credentials file not found: {path}")
+    path = resolve_credentials_path(credentials_path)
 
     try:
         data = payload or ensure_service_account_file(path)
@@ -723,7 +779,7 @@ def _column_a1(column_index: int) -> str:
 
 
 INVENTORY_LAST_COLUMN = _column_a1(len(HEADERS) - 1)
-FULL_COLUMN_RANGE = f"A1:{INVENTORY_LAST_COLUMN}"
+FULL_COLUMN_RANGE = f"A:{INVENTORY_LAST_COLUMN}"
 
 
 def _sheet_range(row_index: int) -> str:
@@ -996,6 +1052,18 @@ def _ensure_sheet_structure(
         )
 
     return worksheet_id
+
+
+def ensure_sheet(service, spreadsheet_id: str, worksheet_title: str) -> int:
+    """Public wrapper that validates identifiers before ensuring worksheet state."""
+
+    parsed_id = parse_spreadsheet_id(spreadsheet_id)
+    if not parsed_id:
+        raise SpreadsheetAccessError("A valid Sheet ID is required.")
+
+    resolved_title = require_worksheet_title(worksheet_title)
+
+    return _ensure_sheet_structure(service, parsed_id, resolved_title)
 
 
 def _sync_customers_sheet(
@@ -1616,9 +1684,7 @@ def health_check(
     if not parsed_id:
         raise SpreadsheetAccessError("A valid Sheet ID is required.")
 
-    path = Path(os.path.expanduser(credential_path)).resolve()
-    if not path.exists():
-        raise CredentialsFileNotFoundError(f"Credentials file not found: {path}")
+    path = resolve_credentials_path(credential_path)
 
     payload = ensure_service_account_file(path)
     raw_email = payload.get("client_email")
@@ -1698,6 +1764,8 @@ __all__ = [
     "inventory_column_range",
     "inventory_full_range",
     "inventory_row_range",
+    "ensure_sheet",
+    "resolve_credentials_path",
     "quote_worksheet_title",
     "require_worksheet_title",
     "push",
